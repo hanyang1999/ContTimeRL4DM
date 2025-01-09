@@ -1,4 +1,4 @@
-# Copied from https://github.com/huggingface/diffusers/blob/fc6acb6b97e93d58cb22b5fee52d884d77ce84d8/src/diffusers/pipelines/stable_diffusion/pipeline_stable_diffusion.py
+                                                    # Copied from https://github.com/huggingface/diffusers/blob/fc6acb6b97e93d58cb22b5fee52d884d77ce84d8/src/diffusers/pipelines/stable_diffusion/pipeline_stable_diffusion.py
 # with the following modifications:
 # - It uses the patched version of `ddim_step_with_logprob` from `ddim_with_logprob.py`. As such, it only supports the
 #   `ddim` scheduler.
@@ -445,7 +445,6 @@ def pipeline_with_logprob(
 
     return image, has_nsfw_concept, all_latents, all_log_probs
 
-
 @torch.no_grad()
 def pipeline_with_logprob_regularizedReward(
     self: StableDiffusionPipeline,
@@ -724,7 +723,6 @@ def pipeline_with_logprob_regularizedReward(
     # print(all_regularization_terms)
 
     return image, has_nsfw_concept, all_latents, all_log_probs, all_regularization_terms
-
 
 @torch.no_grad()
 def pipeline_continuous_regularizedReward(
@@ -1011,7 +1009,6 @@ def pipeline_continuous_regularizedReward(
     # print(all_regularization_terms)
 
     return image, has_nsfw_concept, all_latents, all_log_probs, all_regularization_terms
-
 
 @torch.no_grad()
 def pipeline_continuous_regularizedReward_actionnoise(

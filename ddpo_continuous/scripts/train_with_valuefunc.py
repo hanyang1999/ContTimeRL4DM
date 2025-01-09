@@ -1,7 +1,6 @@
 from collections import defaultdict
 import contextlib
 import os
-import sys
 import datetime
 from concurrent import futures
 import time
@@ -16,21 +15,22 @@ from diffusers.models.attention_processor import LoRAAttnProcessor
 import numpy as np
 import ddpo_pytorch.prompts
 import ddpo_pytorch.rewards
+from reward_model import ValueMulti
 from ddpo_pytorch.stat_tracking import PerPromptStatTracker
-from ddpo_pytorch.diffusers_patch.pipeline_with_logprob import pipeline_DDIM, pipeline_with_logprob
+from ddpo_pytorch.diffusers_patch.pipeline_with_logprob import pipeline_with_logprob, pipeline_with_logprob_regularizedReward
 from ddpo_pytorch.diffusers_patch.ddim_with_logprob import ddim_step_with_logprob
 import torch
 import wandb
 from functools import partial
 import tqdm
+import torch.nn.functional as F
 import tempfile
 from PIL import Image
-
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
-from util import get_decayed_value
+import copy
+from transformers import CLIPModel, CLIPProcessor  # pylint: disable=g-multiple-import
+from transformers import CLIPTextModel, CLIPTokenizer  # pylint: disable=g-multiple-import
 
 tqdm = partial(tqdm.tqdm, dynamic_ncols=True)
-
 
 FLAGS = flags.FLAGS
 config_flags.DEFINE_config_file("config", "config/base.py", "Training configuration.")
@@ -40,10 +40,11 @@ logger = get_logger(__name__)
 def bp():
     import pdb; pdb.set_trace()
 
+
 def main(_):
     # basic Accelerate and logging setup
     config = FLAGS.config
-
+    debug = 0
     unique_id = datetime.datetime.now().strftime("%Y.%m.%d_%H.%M.%S")
     if not config.run_name:
         config.run_name = unique_id
@@ -51,7 +52,6 @@ def main(_):
         config.run_name += "_" + unique_id
 
     if config.resume_from:
-        
         config.resume_from = os.path.normpath(os.path.expanduser(config.resume_from))
         if "checkpoint_" not in os.path.basename(config.resume_from):
             # get the most recent checkpoint in this directory
@@ -83,7 +83,7 @@ def main(_):
     )
     if accelerator.is_main_process:
         accelerator.init_trackers(
-            project_name="ddpo-pytorch", config=config.to_dict(), init_kwargs={"wandb": {"name": config.run_name, "entity": "fantastic_team"}}
+            project_name="ddpo-pytorch", config=config.to_dict(), init_kwargs={"wandb": {"name": config.run_name, "entity": "contiRL4diffusion"}}
         )
     logger.info(f"\n{config}")
 
@@ -92,6 +92,12 @@ def main(_):
 
     # load scheduler, tokenizer and models.
     pipeline = StableDiffusionPipeline.from_pretrained(config.pretrained.model, revision=config.pretrained.revision)
+    
+    pipeline_original = StableDiffusionPipeline.from_pretrained(config.pretrained.model, revision=config.pretrained.revision)
+    pipeline_original.vae.requires_grad_(False)
+    pipeline_original.text_encoder.requires_grad_(False)
+    pipeline_original.unet.requires_grad_(False)
+    
     # freeze parameters of models to save more memory
     pipeline.vae.requires_grad_(False)
     pipeline.text_encoder.requires_grad_(False)
@@ -109,6 +115,23 @@ def main(_):
     # switch to DDIM scheduler
     pipeline.scheduler = DDIMScheduler.from_config(pipeline.scheduler.config)
 
+    # reward models
+    reward_clip_model = CLIPModel.from_pretrained("openai/clip-vit-large-patch14")
+    reward_processor = CLIPProcessor.from_pretrained(
+        "openai/clip-vit-large-patch14"
+    )
+    reward_tokenizer = CLIPTokenizer.from_pretrained(
+        "openai/clip-vit-large-patch14"
+    )
+    
+    reward_clip_model.requires_grad_(False)
+
+    # Load scheduler, tokenizer and models.
+    tokenizer = CLIPTokenizer.from_pretrained(
+        config.pretrained.model,
+        subfolder="tokenizer",
+        revision=config.pretrained.revision,
+    )
     # For mixed precision training we cast all non-trainable weigths (vae, non-lora text_encoder and non-lora unet) to half-precision
     # as these weights are only used for inference, keeping weights in full precision is not required.
     inference_dtype = torch.float32
@@ -122,6 +145,9 @@ def main(_):
     pipeline.text_encoder.to(accelerator.device, dtype=inference_dtype)
     if config.use_lora:
         pipeline.unet.to(accelerator.device, dtype=inference_dtype)
+        pipeline_original.unet.to(accelerator.device, dtype=inference_dtype)
+
+    reward_clip_model.to(accelerator.device, dtype=inference_dtype)
 
     if config.use_lora:
         # Set correct lora layers
@@ -152,11 +178,11 @@ def main(_):
         unet = _Wrapper(pipeline.unet.attn_processors)
     else:
         unet = pipeline.unet
-
+    
     # set up diffusers-friendly checkpoint saving with Accelerate
 
     def save_model_hook(models, weights, output_dir):
-        assert len(models) == 1
+        assert len(models) <= 2 # == 1
         if config.use_lora and isinstance(models[0], AttnProcsLayers):
             pipeline.unet.save_attn_procs(output_dir)
         elif not config.use_lora and isinstance(models[0], UNet2DConditionModel):
@@ -166,7 +192,7 @@ def main(_):
         weights.pop()  # ensures that accelerate doesn't try to handle saving of the model
 
     def load_model_hook(models, input_dir):
-        assert len(models) == 1
+        assert len(models) <= 2 # == 1
         if config.use_lora and isinstance(models[0], AttnProcsLayers):
             # pipeline.unet.load_attn_procs(input_dir)
             tmp_unet = UNet2DConditionModel.from_pretrained(
@@ -186,6 +212,67 @@ def main(_):
 
     accelerator.register_save_state_pre_hook(save_model_hook)
     accelerator.register_load_state_pre_hook(load_model_hook)
+
+    def _train_value_func(value_function, samples_batched, accelerator, config):
+        """Trains the value function."""
+        """
+        "prompt_ids": prompt_ids,
+        "prompt_embeds": prompt_embeds,
+        "timesteps": timesteps,
+        "latents": latents[:, :-1],  # each entry is the latent before timestep t
+        "next_latents": latents[:, 1:],  # each entry is the latent after timestep t
+        "log_probs": log_probs,
+        "rewards": rewards,
+        "rewards_regularized": None,
+        "regularization": regularization_sum
+        "prompt_embeds_value"
+        """
+        batch_state_original = samples_batched["latents"].squeeze(1)
+        new_first_dim = batch_state_original.shape[0] * batch_state_original.shape[1] 
+        batch_state = batch_state_original.reshape(new_first_dim, *batch_state_original.shape[2:])
+        batch_timestep = samples_batched["timesteps"].squeeze(1).reshape(new_first_dim, *samples_batched["timesteps"].shape[3:])
+        batch_final_reward = samples_batched["rewards"].squeeze(1)
+        batch_txt_emb_value = samples_batched["prompt_embeds_value"].squeeze(1)
+
+        batch_timestep = (batch_timestep - 1) * config.sample.num_steps / 1000
+        batch_timestep = batch_timestep.int() 
+
+        repeats = int(new_first_dim / batch_txt_emb_value.shape[0])
+        repeated_txt_emb_value = []
+        for i in range(batch_txt_emb_value.shape[0]):
+            row = batch_txt_emb_value[i].unsqueeze(0)
+            repeated_row = row.repeat(repeats, 1)
+            repeated_txt_emb_value.append(repeated_row)
+
+        batch_txt_emb_value = torch.cat(repeated_txt_emb_value, dim=0)
+
+        pred_value = value_function(
+            batch_state.cuda().detach(),
+            batch_txt_emb_value.cuda().detach(),
+            batch_timestep.cuda().detach()
+        )
+        # calculate summation of regularization reward after timestep till end
+        batch_final_reward = batch_final_reward.cuda().float()
+
+        repeated_final_reward = []
+        for i in range(batch_final_reward.shape[0]):
+            row = batch_final_reward[i].unsqueeze(0)
+            repeated_row = row.repeat(repeats, 1)
+            repeated_final_reward.append(repeated_row)
+
+        batch_final_reward = torch.cat(repeated_final_reward, dim=0)
+
+        # batch_final_reward += regularization_sum
+        value_loss = F.mse_loss(
+            pred_value.float(),
+            batch_final_reward.cuda().detach())
+        accelerator.backward(value_loss/config.v_step)
+        del pred_value
+        del batch_state
+        del batch_timestep
+        del batch_final_reward
+        del batch_txt_emb_value
+        return (value_loss.item() / config.v_step)
 
     # Enable TF32 for faster training on Ampere GPUs,
     # cf https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices
@@ -216,7 +303,7 @@ def main(_):
     # prepare prompt and reward fn
     prompt_fn = getattr(ddpo_pytorch.prompts, config.prompt_fn)
     reward_fn = getattr(ddpo_pytorch.rewards, config.reward_fn)()
-
+    
     # generate negative prompt embeddings
     neg_prompt_embed = pipeline.text_encoder(
         pipeline.tokenizer(
@@ -229,6 +316,7 @@ def main(_):
     )[0]
     sample_neg_prompt_embeds = neg_prompt_embed.repeat(config.sample.batch_size, 1, 1)
     train_neg_prompt_embeds = neg_prompt_embed.repeat(config.train.batch_size, 1, 1)
+
 
     # initialize stat tracker
     if config.per_prompt_stat_tracking:
@@ -245,6 +333,11 @@ def main(_):
     # Prepare everything with our `accelerator`.
     unet, optimizer = accelerator.prepare(unet, optimizer)
 
+    value_function = ValueMulti(50, (4, 64, 64))
+    value_optimizer = torch.optim.AdamW(value_function.parameters(), lr=config.v_lr)
+    value_function, value_optimizer = accelerator.prepare(
+        value_function, value_optimizer
+    )
     # executor to perform callbacks asynchronously. this is beneficial for the llava callbacks which makes a request to a
     # remote server running llava inference.
     executor = futures.ThreadPoolExecutor(max_workers=2)
@@ -283,10 +376,9 @@ def main(_):
         #################### SAMPLING ####################
         pipeline.unet.eval()
         samples = []
-        samples_DDIM = []
         prompts = []
         for i in tqdm(
-            range(config.sample.num_batches_per_epoch),
+            range(config.sample.num_batches_per_epoch), # num_batches_per_epoch = 4
             desc=f"Epoch {epoch}: sampling",
             disable=not accelerator.is_local_main_process,
             position=0,
@@ -295,7 +387,6 @@ def main(_):
             prompts, prompt_metadata = zip(
                 *[prompt_fn(**config.prompt_fn_kwargs) for _ in range(config.sample.batch_size)]
             )
-
             # encode prompts
             prompt_ids = pipeline.tokenizer(
                 prompts,
@@ -305,75 +396,95 @@ def main(_):
                 max_length=pipeline.tokenizer.model_max_length,
             ).input_ids.to(accelerator.device)
             prompt_embeds = pipeline.text_encoder(prompt_ids)[0]
+            
+            
+            inputs = reward_tokenizer(
+                prompts,
+                max_length=tokenizer.model_max_length,
+                padding="do_not_pad",
+                truncation=True,
+            )
+            input_ids = inputs.input_ids
+            padded_tokens = reward_tokenizer.pad(
+                {"input_ids": input_ids}, padding=True, return_tensors="pt"
+            )
 
-            
-            
+            txt_emb_value = reward_clip_model.get_text_features(
+                input_ids=padded_tokens.input_ids.to("cuda")
+            )     
+                   
+            # sample
             with autocast():
-                # sample under DDIM (eta = 0)
-                # print("Sampling under DDIM")
-                images_DDIM, _ = pipeline_DDIM(
-                    pipeline,
-                    prompt_embeds=prompt_embeds,
-                    negative_prompt_embeds=sample_neg_prompt_embeds,
-                    num_inference_steps=config.sample.num_steps,
-                    guidance_scale=config.sample.guidance_scale,
-                    eta=0.0,
-                    output_type="pt",
-                )
-
-                # sample under DDPM (or DDIM with eta = 1)
-                # print("Sampling under DDPM")
-                images, _, latents, log_probs = pipeline_with_logprob(
-                    pipeline,
-                    prompt_embeds=prompt_embeds,
-                    negative_prompt_embeds=sample_neg_prompt_embeds,
-                    num_inference_steps=config.sample.num_steps,
-                    guidance_scale=config.sample.guidance_scale,
-                    eta=get_decayed_value(epoch, config),  #config.sample.eta,
-                    output_type="pt",
-                )
+                if config.use_regularization:
+                    images, _, latents, log_probs, all_regularization_terms = pipeline_with_logprob_regularizedReward(
+                        pipeline,
+                        prompt_embeds=prompt_embeds,
+                        negative_prompt_embeds=sample_neg_prompt_embeds,
+                        num_inference_steps=config.sample.num_steps,
+                        guidance_scale=config.sample.guidance_scale,
+                        eta=config.sample.eta,
+                        output_type="pt",
+                        original_unet= pipeline_original.unet,
+                        debug = debug,
+                    )
+                else:
+                    images, _, latents, log_probs = pipeline_with_logprob(
+                        pipeline,
+                        prompt_embeds=prompt_embeds,
+                        negative_prompt_embeds=sample_neg_prompt_embeds,
+                        num_inference_steps=config.sample.num_steps,
+                        guidance_scale=config.sample.guidance_scale,
+                        eta=config.sample.eta,
+                        output_type="pt",
+                    )
 
             latents = torch.stack(latents, dim=1)  # (batch_size, num_steps + 1, 4, 64, 64)
             log_probs = torch.stack(log_probs, dim=1)  # (batch_size, num_steps, 1)
-
-            # regu_reward = torch.stack(regu_reward, dim=1) 
-
+            
+            # len(all_regularization_terms) = num_steps
+            if config.use_regularization:
+                regularizations = torch.stack(all_regularization_terms, dim=-1) # (batch_size, num_steps)
+                regularization_sum = regularizations.sum(dim=-1) # (batch_size, 1)
+            
+            #print(reward_regularization) 
+            
             timesteps = pipeline.scheduler.timesteps.repeat(config.sample.batch_size, 1)  # (batch_size, num_steps)
 
             # compute rewards asynchronously
             rewards = executor.submit(reward_fn, images, prompts, prompt_metadata)
-
-            rewards_DDIM = executor.submit(reward_fn, images_DDIM, prompts, prompt_metadata)
-            
-            # rewards += regu_reward.sum(dim=-1)
-
+            # import pdb; pdb.set_trace()
             # yield to to make sure reward computation starts
             time.sleep(0)
-
-            samples.append(
-                {
-                    "prompt_ids": prompt_ids,
-                    "prompt_embeds": prompt_embeds,
-                    "timesteps": timesteps,
-                    "latents": latents[:, :-1],  # each entry is the latent before timestep t
-                    "next_latents": latents[:, 1:],  # each entry is the latent after timestep t
-                    "log_probs": log_probs,
-                    "rewards": rewards,
-                    #"eta": torch.tensor(get_decayed_value(epoch, config)),
-                }
-            )
-
-            samples_DDIM.append(
-                {
-                    "prompt_ids": prompt_ids,
-                    "prompt_embeds": prompt_embeds,
-                    "timesteps": timesteps,
-                    # "latents": latents[:, :-1],  # each entry is the latent before timestep t
-                    # "next_latents": latents[:, 1:],  # each entry is the latent after timestep t
-                    # "log_probs": log_probs,
-                    "rewards": rewards_DDIM,
-                }
-            )
+            
+            if config.use_regularization:
+                samples.append(
+                    {
+                        "prompt_ids": prompt_ids,
+                        "prompt_embeds": prompt_embeds,
+                        "prompt_embeds_value": txt_emb_value,
+                        "timesteps": timesteps,
+                        "latents": latents[:, :-1],  # each entry is the latent before timestep t
+                        "next_latents": latents[:, 1:],  # each entry is the latent after timestep t
+                        "log_probs": log_probs,
+                        "rewards": rewards,
+                        "regularization_terms": all_regularization_terms,
+                        "rewards_regularized": None,
+                        "regularization": regularization_sum,
+                    }
+                )
+            else:
+                samples.append(
+                    {
+                        "prompt_ids": prompt_ids,
+                        "prompt_embeds": prompt_embeds,
+                        "prompt_embeds_value": txt_emb_value,
+                        "timesteps": timesteps,
+                        "latents": latents[:, :-1],  # each entry is the latent before timestep t
+                        "next_latents": latents[:, 1:],  # each entry is the latent after timestep t
+                        "log_probs": log_probs,
+                        "rewards": rewards,
+                    }
+                )
 
         # wait for all rewards to be computed
         for sample in tqdm(
@@ -385,40 +496,14 @@ def main(_):
             rewards, reward_metadata = sample["rewards"].result()
             # accelerator.print(reward_metadata)
             sample["rewards"] = torch.as_tensor(rewards, device=accelerator.device)
-
-
-        # wait for all rewards to be computed
-        for sample_DDIM in tqdm(
-            samples_DDIM,
-            desc="Waiting for rewards",
-            disable=not accelerator.is_local_main_process,
-            position=0,
-        ):
-            rewards_DDIM, reward_metadata = sample_DDIM["rewards"].result()
-            # accelerator.print(reward_metadata)
-            sample_DDIM["rewards"] = torch.as_tensor(rewards_DDIM, device=accelerator.device)
+            if config.use_regularization:
+                sample["rewards_regularized"] = sample["rewards"] - config.penalty_constant / 2.0 * sample["regularization"]
 
         # collate samples into dict where each entry has shape (num_batches_per_epoch * sample.batch_size, ...)
         samples = {k: torch.cat([s[k] for s in samples]) for k in samples[0].keys()}
 
-        samples_DDIM = {k: torch.cat([s[k] for s in samples_DDIM]) for k in samples_DDIM[0].keys()}
-
         # this is a hack to force wandb to log the images as JPEGs instead of PNGs
         with tempfile.TemporaryDirectory() as tmpdir:
-            for i, image in enumerate(images_DDIM):
-                pil = Image.fromarray((image.cpu().numpy().transpose(1, 2, 0) * 255).astype(np.uint8))
-                pil = pil.resize((256, 256))
-                pil.save(os.path.join(tmpdir, f"{i}.jpg"))
-            accelerator.log(
-                {
-                    "images-DDIM": [
-                        wandb.Image(os.path.join(tmpdir, f"{i}.jpg"), caption=f"{prompt:.25} | {reward:.2f}")
-                        for i, (prompt, reward) in enumerate(zip(prompts, rewards_DDIM))  # only log rewards from process 0
-                    ],
-                },
-                step=global_step,
-            )
-
             for i, image in enumerate(images):
                 pil = Image.fromarray((image.cpu().numpy().transpose(1, 2, 0) * 255).astype(np.uint8))
                 pil = pil.resize((256, 256))
@@ -436,32 +521,18 @@ def main(_):
         # gather rewards across processes
         rewards = accelerator.gather(samples["rewards"]).cpu().numpy()
 
-        rewards_DDIM = accelerator.gather(samples_DDIM["rewards"]).cpu().numpy()
-        
         # log rewards and images
-        print(f"epoch: {epoch}/{config.num_epochs}")
-        print(f'eta: {get_decayed_value(epoch, config)}')
-        #print(f'clip range: {config.train.clip_range + config.train.clip_range * 2 * (1 - get_decayed_value(epoch, config))}')
-
         accelerator.log(
-            {
-             "reward": rewards,
-             "epoch": epoch, 
-             "reward_mean": rewards.mean(), 
-             "reward_std": rewards.std(), 
-             "eta": torch.tensor(get_decayed_value(epoch, config)),
-             },
+            {"reward": rewards, "epoch": epoch, "reward_mean": rewards.mean(), "reward_std": rewards.std()},
             step=global_step,
         )
-
-        accelerator.log(
-            {"reward-DDIM": rewards_DDIM, 
-             "epoch": epoch, 
-             "reward_mean_DDIM": rewards_DDIM.mean(), 
-             "reward_std_DDIM": rewards_DDIM.std()},
-            step=global_step,
-        )
-
+        
+        # Modify the rewards with regularization
+        if config.use_regularization:
+            rewards = accelerator.gather(samples["rewards_regularized"]).cpu().numpy()
+        
+        # import pdb;pdb.set_trace()
+        
         # per-prompt mean/std tracking
         if config.per_prompt_stat_tracking:
             # gather the prompts across processes
@@ -470,8 +541,9 @@ def main(_):
             advantages = stat_tracker.update(prompts, rewards)
         else:
             advantages = (rewards - rewards.mean()) / (rewards.std() + 1e-8)
-        # bp()
-
+        
+        # import pdb;pdb.set_trace()
+        
         # ungather advantages; we only need to keep the entries corresponding to the samples on this process
         samples["advantages"] = (
             torch.as_tensor(advantages)
@@ -479,12 +551,14 @@ def main(_):
             .to(accelerator.device)
         )
 
-        del samples["rewards"]
+        # del samples["rewards"]
+        # del samples["rewards_regularized"]
         del samples["prompt_ids"]
 
         total_batch_size, num_timesteps = samples["timesteps"].shape
         assert total_batch_size == config.sample.batch_size * config.sample.num_batches_per_epoch
         assert num_timesteps == config.sample.num_steps
+
 
         #################### TRAINING ####################
         for inner_epoch in range(config.train.num_inner_epochs):
@@ -496,16 +570,36 @@ def main(_):
             perms = torch.stack(
                 [torch.randperm(num_timesteps, device=accelerator.device) for _ in range(total_batch_size)]
             )
-            # bp()
             for key in ["timesteps", "latents", "next_latents", "log_probs"]:
                 samples[key] = samples[key][torch.arange(total_batch_size, device=accelerator.device)[:, None], perms]
 
             # rebatch for training
             samples_batched = {k: v.reshape(-1, config.train.batch_size, *v.shape[1:]) for k, v in samples.items()}
 
+            if config.v_flag == 1:
+                tot_val_loss = 0
+                value_optimizer.zero_grad()
+                for v_step in range(config.v_step):
+                    if v_step < config.v_step-1:
+                        with accelerator.no_sync(value_function):
+                            tot_val_loss += _train_value_func(
+                                value_function, samples_batched, accelerator, config
+                            )
+                    else:
+                        tot_val_loss += _train_value_func(
+                            value_function, samples_batched, accelerator, config
+                        )
+                value_optimizer.step()
+                value_optimizer.zero_grad()
+                if accelerator.is_main_process:
+                    print("value_loss", tot_val_loss)
+                    accelerator.log({"value_loss": tot_val_loss}, step=inner_epoch)
+                del tot_val_loss
+                torch.cuda.empty_cache()
+                
             # dict of lists -> list of dicts for easier iteration
             samples_batched = [dict(zip(samples_batched, x)) for x in zip(*samples_batched.values())]
-
+              
             # train
             pipeline.unet.train()
             info = defaultdict(list)
@@ -514,7 +608,7 @@ def main(_):
                 desc=f"Epoch {epoch}.{inner_epoch}: training",
                 position=0,
                 disable=not accelerator.is_local_main_process,
-            ):
+            ):  
                 if config.train.cfg:
                     # concat negative prompts to sample prompts to avoid two forward passes
                     embeds = torch.cat([train_neg_prompt_embeds, sample["prompt_embeds"]])
@@ -552,24 +646,39 @@ def main(_):
                                 noise_pred,
                                 sample["timesteps"][:, j],
                                 sample["latents"][:, j],
-                                eta=get_decayed_value(epoch, config),  #config.sample.eta,
+                                eta=config.sample.eta,
                                 prev_sample=sample["next_latents"][:, j],
                             )
+                            
+                        # Add value function
+                        scaled_timestep = torch.tensor(int((sample["timesteps"][:,j] - 1) * 50 / 1000))
 
+                        value_func = value_function(sample["latents"][:,j], sample["prompt_embeds"][:,j], scaled_timestep)
+                        
+                        # calculate next latent's value function
+                        next_timestep = torch.tensor(torch.max(scaled_timestep - 1, 0))
+                        value_func_next = value_function(sample["next_latents"][:,j], sample["prompt_embeds"][:,j], next_timestep)
+                        
+                        
                         # ppo logic
-                        advantages = torch.clamp(
-                            sample["advantages"], -config.train.adv_clip_max, config.train.adv_clip_max
-                        )
+                        # advantages = torch.clamp(
+                        #     value_func_next - value_func, -config.train.adv_clip_max, config.train.adv_clip_max
+                        # )
+                        
+                        sample_regularization = sample["regularization_terms"][:,j]
+                        
+                        TD_error = sample_regularization + value_func_next - value_func
+                        
+                        advantages = TD_error # shall we scale with mean and std like for DDPO original implementation?
+                        
+                        # advantages = torch.clamp(
+                        #      advantages, -config.train.adv_clip_max, config.train.adv_clip_max)
+                        
                         ratio = torch.exp(log_prob - sample["log_probs"][:, j])
                         unclipped_loss = -advantages * ratio
-
-                        #clip_range = config.train.clip_range + config.train.clip_range * 2 * (1 - get_decayed_value(epoch, config))
-                        clip_range = config.train.clip_range 
-
                         clipped_loss = -advantages * torch.clamp(
-                            ratio, 1.0 - clip_range, 1.0 + clip_range
+                            ratio, 1.0 - config.train.clip_range, 1.0 + config.train.clip_range
                         )
-                        # import pdb;pdb.set_trace()
                         loss = torch.mean(torch.maximum(unclipped_loss, clipped_loss))
 
                         # debugging values
@@ -577,7 +686,7 @@ def main(_):
                         # estimator, but most existing code uses this so...
                         # http://joschu.net/blog/kl-approx.html
                         info["approx_kl"].append(0.5 * torch.mean((log_prob - sample["log_probs"][:, j]) ** 2))
-                        info["clipfrac"].append(torch.mean((torch.abs(ratio - 1.0) > clip_range).float()))
+                        info["clipfrac"].append(torch.mean((torch.abs(ratio - 1.0) > config.train.clip_range).float()))
                         info["loss"].append(loss)
 
                         # backward pass
