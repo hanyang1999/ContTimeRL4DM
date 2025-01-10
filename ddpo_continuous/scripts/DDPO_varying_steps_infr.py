@@ -21,6 +21,7 @@ from ddpo_pytorch.diffusers_patch.pipeline_with_logprob import pipeline_DDIM, pi
 from ddpo_pytorch.diffusers_patch.ddim_with_logprob import ddim_step_with_logprob
 import torch
 import torch.distributed as dist
+import ImageReward as RM
 
 import wandb
 from functools import partial
@@ -217,6 +218,23 @@ def main(_):
 
     # prepare prompt and reward fn
     prompt_fn = getattr(ddpo_pytorch.prompts, config.prompt_fn)
+
+    # if config.reward_fn == 'imagereward':
+    #     reward_model = RM.load("ImageReward-v1.0")
+    #     def calculate_score(prompts, imgs):
+    #         assert len(prompts) == len(imgs)
+    #         #image_device = imgs[0].device
+    #         #reward_model = reward_model.to(image_device)
+    #         results = []
+    #         with torch.no_grad():
+    #             for index in range(len(imgs)):
+    #                 score = reward_model.score(prompts[index], imgs[index])
+    #                 results.append(score)
+    #         return results
+    #     reward_fn = calculate_score #reward_model.score
+    # else:
+    #     reward_fn = getattr(ddpo_pytorch.rewards, config.reward_fn)()
+    
     reward_fn = getattr(ddpo_pytorch.rewards, config.reward_fn)()
 
     # generate negative prompt embeddings
@@ -287,6 +305,7 @@ def main(_):
         pipeline.unet.eval()
         samples = []
         samples_rewards = {}
+        var_inf_images = {}
         # samples_DDIM = []
         prompts = []
         for i in tqdm(
@@ -300,6 +319,9 @@ def main(_):
                 *[prompt_fn(**config.prompt_fn_kwargs) for _ in range(config.sample.batch_size)]
             )
 
+            # if dist.get_rank() == 0:
+            #     breakpoint()
+
             # encode prompts
             prompt_ids = pipeline.tokenizer(
                 prompts,
@@ -310,7 +332,20 @@ def main(_):
             ).input_ids.to(accelerator.device)
             prompt_embeds = pipeline.text_encoder(prompt_ids)[0]
 
-            for num_steps in var_inf_steps:
+            for var_inf_iter, num_steps in enumerate(var_inf_steps):
+                # if config.reward_fn == 'imagereward':
+                #     with autocast():
+                #         images, _, latents, log_probs = pipeline_with_logprob(
+                #             pipeline,
+                #             prompt_embeds=prompt_embeds,
+                #             negative_prompt_embeds=sample_neg_prompt_embeds,
+                #             num_inference_steps=num_steps,
+                #             guidance_scale=config.sample.guidance_scale,
+                #             eta=get_decayed_value(epoch, config),  #config.sample.eta,
+                #             output_type="pil",
+                #         )
+                #     rewards = executor.submit(reward_fn, prompts, images) #.to(latents.device)
+                # else:
                 with autocast():
                     images, _, latents, log_probs = pipeline_with_logprob(
                         pipeline,
@@ -321,12 +356,17 @@ def main(_):
                         eta=get_decayed_value(epoch, config),  #config.sample.eta,
                         output_type="pt",
                     )
+                
                 rewards = executor.submit(reward_fn, images, prompts, prompt_metadata)
+                # if dist.get_rank() == 0:
+                #     breakpoint()
+
                 if not samples_rewards.get(num_steps, 0):
                     samples_rewards[num_steps] = [{"rewards": rewards}]
                 else:
                     samples_rewards[num_steps].append({"rewards": rewards})
                 
+                var_inf_images[num_steps] = images
 
             
             with autocast():
@@ -336,7 +376,7 @@ def main(_):
                 #     pipeline,
                 #     prompt_embeds=prompt_embeds,
                 #     negative_prompt_embeds=sample_neg_prompt_embeds,
-                #     num_inference_steps=config.sample.num_steps,
+                #     num_inference_steps=config.sample.num_sconteps,
                 #     guidance_scale=config.sample.guidance_scale,
                 #     eta=0.0,
                 #     output_type="pt",
@@ -362,6 +402,9 @@ def main(_):
             timesteps = pipeline.scheduler.timesteps.repeat(config.sample.batch_size, 1)  # (batch_size, num_steps)
 
             # compute rewards asynchronously
+            # if config.reward_fn == 'imagereward':
+            #     rewards = executor.submit(reward_fn, prompts, images)
+            # else:
             rewards = executor.submit(reward_fn, images, prompts, prompt_metadata)
 
             # rewards_DDIM = executor.submit(reward_fn, images_DDIM, prompts, prompt_metadata)
@@ -396,17 +439,25 @@ def main(_):
             #     }
             # )
 
+        image_sample_rewards = {}
         for num_steps in var_inf_steps:
+            counter = 0
             for sample in tqdm(
                 samples_rewards[num_steps],
                 desc="Waiting for rewards",
                 disable=not accelerator.is_local_main_process,
                 position=0,
             ):
+                # if config.reward_fn == 'imagereward':
+                #     rewards = sample["rewards"].result()
+                # else:    
                 rewards, reward_metadata = sample["rewards"].result()
                 # accelerator.print(reward_metadata)
                 sample["rewards"] = torch.as_tensor(rewards, device=accelerator.device)
-
+                
+                if counter == len(samples_rewards[num_steps])-1:
+                    image_sample_rewards[num_steps] = rewards
+                counter += 1
 
         # wait for all rewards to be computed
         for sample in tqdm(
@@ -415,7 +466,11 @@ def main(_):
             disable=not accelerator.is_local_main_process,
             position=0,
         ):
+            # if config.reward_fn == 'imagereward':
+            #     rewards = sample["rewards"].result()
+            # else:    
             rewards, reward_metadata = sample["rewards"].result()
+            # rewards, reward_metadata = sample["rewards"].result()
             # accelerator.print(reward_metadata)
             sample["rewards"] = torch.as_tensor(rewards, device=accelerator.device)
 
@@ -445,6 +500,24 @@ def main(_):
         #samples_DDIM = {k: torch.cat([s[k] for s in samples_DDIM]) for k in samples_DDIM[0].keys()}
 
         # this is a hack to force wandb to log the images as JPEGs instead of PNGs
+
+        for num_steps in var_inf_steps:
+            with tempfile.TemporaryDirectory() as tmpdir:
+
+                for i, image in enumerate(var_inf_images[num_steps]):
+                    pil = Image.fromarray((image.cpu().numpy().transpose(1, 2, 0) * 255).astype(np.uint8))
+                    pil = pil.resize((256, 256))
+                    pil.save(os.path.join(tmpdir, f"{i}.jpg"))
+                accelerator.log(
+                    {
+                        f"images_{num_steps}": [
+                            wandb.Image(os.path.join(tmpdir, f"{i}.jpg"), caption=f"{prompt:.25} | {reward:.2f}")
+                            for i, (prompt, reward) in enumerate(zip(prompts, image_sample_rewards[num_steps]))  # only log rewards from process 0
+                        ],
+                    },
+                    step=global_step,
+                )
+
         with tempfile.TemporaryDirectory() as tmpdir:
             # for i, image in enumerate(images_DDIM):
             #     pil = Image.fromarray((image.cpu().numpy().transpose(1, 2, 0) * 255).astype(np.uint8))

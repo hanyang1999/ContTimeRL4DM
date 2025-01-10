@@ -101,6 +101,23 @@ def incompressibility():
     return config
 
 
+def imagereward():
+    # config = compressibility_pretrain()
+    config = compressibility()
+    
+    #config.run_name = "ddpo_incompressibility"
+    
+
+    
+    config.reward_fn = "imagereward"
+
+    config.train.learning_rate = 3e-4
+    config.train.batch_size = 2
+    config.train.gradient_accumulation_steps = 12
+
+    config.run_name = f"ddpo_imagereward_no_regularization_eta={config.sample.eta}_decay={config.sample.decay.type}_lr={config.train.learning_rate}_clip={config.train.clip_range}_seed={config.seed}"
+    return config
+
 def aesthetic():
     config = compressibility()
 
