@@ -54,7 +54,7 @@ def get_config():
     # being fully deterministic and 1.0 being equivalent to the DDPM sampler.
     sample.eta = 1.0
     # classifier-free guidance weight. 1.0 is no guidance.
-    sample.guidance_scale = 5.0
+    sample.guidance_scale = 7.0
     # batch size (per GPU!) to use for sampling.
     sample.batch_size = 1
     # number of batches to sample per epoch. the total number of samples per epoch is `num_batches_per_epoch *

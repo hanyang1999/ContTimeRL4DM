@@ -218,23 +218,6 @@ def main(_):
 
     # prepare prompt and reward fn
     prompt_fn = getattr(ddpo_pytorch.prompts, config.prompt_fn)
-
-    # if config.reward_fn == 'imagereward':
-    #     reward_model = RM.load("ImageReward-v1.0")
-    #     def calculate_score(prompts, imgs):
-    #         assert len(prompts) == len(imgs)
-    #         #image_device = imgs[0].device
-    #         #reward_model = reward_model.to(image_device)
-    #         results = []
-    #         with torch.no_grad():
-    #             for index in range(len(imgs)):
-    #                 score = reward_model.score(prompts[index], imgs[index])
-    #                 results.append(score)
-    #         return results
-    #     reward_fn = calculate_score #reward_model.score
-    # else:
-    #     reward_fn = getattr(ddpo_pytorch.rewards, config.reward_fn)()
-    
     reward_fn = getattr(ddpo_pytorch.rewards, config.reward_fn)()
 
     # generate negative prompt embeddings
@@ -299,7 +282,9 @@ def main(_):
         first_epoch = 0
 
     global_step = 0
-    var_inf_steps = [10, 25, config.sample.num_steps, 100, 200]
+    #var_inf_steps = [10, 25, config.sample.num_steps, 100, 200]
+    var_inf_steps = [25, 100]
+    
     for epoch in range(first_epoch, config.num_epochs):
         #################### SAMPLING ####################
         pipeline.unet.eval()
@@ -333,19 +318,6 @@ def main(_):
             prompt_embeds = pipeline.text_encoder(prompt_ids)[0]
 
             for var_inf_iter, num_steps in enumerate(var_inf_steps):
-                # if config.reward_fn == 'imagereward':
-                #     with autocast():
-                #         images, _, latents, log_probs = pipeline_with_logprob(
-                #             pipeline,
-                #             prompt_embeds=prompt_embeds,
-                #             negative_prompt_embeds=sample_neg_prompt_embeds,
-                #             num_inference_steps=num_steps,
-                #             guidance_scale=config.sample.guidance_scale,
-                #             eta=get_decayed_value(epoch, config),  #config.sample.eta,
-                #             output_type="pil",
-                #         )
-                #     rewards = executor.submit(reward_fn, prompts, images) #.to(latents.device)
-                # else:
                 with autocast():
                     images, _, latents, log_probs = pipeline_with_logprob(
                         pipeline,
@@ -370,20 +342,6 @@ def main(_):
 
             
             with autocast():
-                # sample under DDIM (eta = 0)
-                # print("Sampling under DDIM")
-                # images_DDIM, _ = pipeline_DDIM(
-                #     pipeline,
-                #     prompt_embeds=prompt_embeds,
-                #     negative_prompt_embeds=sample_neg_prompt_embeds,
-                #     num_inference_steps=config.sample.num_sconteps,
-                #     guidance_scale=config.sample.guidance_scale,
-                #     eta=0.0,
-                #     output_type="pt",
-                # )
-
-                # sample under DDPM (or DDIM with eta = 1)
-                # print("Sampling under DDPM")
                 images, _, latents, log_probs = pipeline_with_logprob(
                     pipeline,
                     prompt_embeds=prompt_embeds,
@@ -508,6 +466,7 @@ def main(_):
                     pil = Image.fromarray((image.cpu().numpy().transpose(1, 2, 0) * 255).astype(np.uint8))
                     pil = pil.resize((256, 256))
                     pil.save(os.path.join(tmpdir, f"{i}.jpg"))
+                
                 accelerator.log(
                     {
                         f"images_{num_steps}": [
@@ -715,7 +674,12 @@ def main(_):
                         # backward pass
                         accelerator.backward(loss)
                         if accelerator.sync_gradients:
+                            grad_norm = torch.nn.utils.clip_grad_norm_(unet.parameters(), float('inf'))  # Compute full norm without clipping
+                            info["grad_norm_clipfrac"].append(torch.mean((grad_norm > config.train.max_grad_norm).float()))
+                            info["clipfrac"].append(torch.mean((torch.abs(ratio - 1.0) > clip_range).float()))
+
                             accelerator.clip_grad_norm_(unet.parameters(), config.train.max_grad_norm)
+                        
                         optimizer.step()
                         optimizer.zero_grad()
 
