@@ -105,9 +105,11 @@ class ImageReward(nn.Module):
         if (type(image).__name__=='list'):
             _, rewards = self.inference_rank(prompt, image)
             return rewards
+
+        cur_device = next(self.blip.parameters()).device
             
         # text encode
-        text_input = self.blip.tokenizer(prompt, padding='max_length', truncation=True, max_length=35, return_tensors="pt").to(self.device)
+        text_input = self.blip.tokenizer(prompt, padding='max_length', truncation=True, max_length=35, return_tensors="pt").to(cur_device)
         
         # image encode
         if isinstance(image, Image.Image):
@@ -117,11 +119,11 @@ class ImageReward(nn.Module):
         else:
             raise TypeError(r'This image parameter type has not been supportted yet. Please pass PIL.Image or file path str.')
             
-        image = self.preprocess(pil_image).unsqueeze(0).to(self.device)
-        image_embeds = self.blip.visual_encoder(image)
+        image = self.preprocess(pil_image).unsqueeze(0).to(cur_device)
+        image_embeds = self.blip.visual_encoder(image).to(cur_device)
         
         # text encode cross attention with image
-        image_atts = torch.ones(image_embeds.size()[:-1],dtype=torch.long).to(self.device)
+        image_atts = torch.ones(image_embeds.size()[:-1],dtype=torch.long).to(cur_device)
         text_output = self.blip.text_encoder(text_input.input_ids,
                                                 attention_mask = text_input.attention_mask,
                                                 encoder_hidden_states = image_embeds,
