@@ -107,23 +107,24 @@ def imagereward():
     
     #config.run_name = "ddpo_incompressibility"
 
-    config.num_epochs = 200
+    config.num_epochs = 100
     config.reward_fn = "imagereward"
 
     config.sample.batch_size = 8
-    config.sample.num_batches_per_epoch = 8 #4
+    config.sample.num_batches_per_epoch = 8
 
-    config.train.clip_range = 2e-5 #1e-4
-    config.train.learning_rate = 2e-5
+    config.train.clip_range = 5e-5
+    config.train.learning_rate = 1e-4
+
     config.train.batch_size = 2
-    config.train.max_grad_norm = 5.0 # 1.0
-    config.train.gradient_accumulation_steps = 16
+    config.train.gradient_accumulation_steps = 8
 
-    config.prompt_fn = "simple_animals"
-    config.per_prompt_stat_tracking = {
-        "buffer_size": 32,
-        "min_count": 16,
-    }
+    # config.prompt_fn = "activities"
+    config.prompt_fn = "simple_animals_4"
+    # config.per_prompt_stat_tracking = {
+    #     "buffer_size": 32,
+    #     "min_count": 16,
+    # }
 
     config.run_name = f"ddpo_imagereward_no_regularization_eta={config.sample.eta}_decay={config.sample.decay.type}_lr={config.train.learning_rate}_clip={config.train.clip_range}_seed={config.seed}"
     return config
