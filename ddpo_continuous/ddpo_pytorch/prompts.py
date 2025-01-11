@@ -39,6 +39,8 @@ def imagenet_animals():
 def imagenet_dogs():
     return from_file("imagenet_classes.txt", 151, 269)
 
+def simple_animal():
+    return from_file("simple_animal.txt")
 
 def simple_animals():
     return from_file("simple_animals.txt")
