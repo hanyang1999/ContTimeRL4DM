@@ -27,17 +27,17 @@ def from_file(path, low=None, high=None):
     prompts = _load_lines(path)[low:high]
     return random.choice(prompts), {}
 
-
 def imagenet_all():
     return from_file("imagenet_classes.txt")
-
 
 def imagenet_animals():
     return from_file("imagenet_classes.txt", 0, 398)
 
-
 def imagenet_dogs():
     return from_file("imagenet_classes.txt", 151, 269)
+
+def single_prompt():
+    return from_file("single_prompt.txt")
 
 def simple_animal():
     return from_file("simple_animal.txt")
