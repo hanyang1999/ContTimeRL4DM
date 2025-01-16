@@ -15,10 +15,9 @@ from diffusers.models.attention_processor import LoRAAttnProcessor
 import numpy as np
 import ddpo_pytorch.prompts
 import ddpo_pytorch.rewards
-from reward_model import ValueMulti, ValueMulti_continuous_v2
+# from reward_model import ValueMulti, ValueMulti_continuous_v2
 from ddpo_pytorch.stat_tracking import PerPromptStatTracker
-from ddpo_pytorch.diffusers_patch.pipeline_with_logprob import pipeline_with_logprob, pipeline_with_logprob_regularizedReward
-from ddpo_pytorch.diffusers_patch.ddim_with_logprob import ddim_step_with_logprob
+from ddpo_pytorch.diffusers_patch.pipeline_with_logprob import pipeline_with_logprob
 import torch
 import wandb
 from functools import partial
@@ -274,74 +273,6 @@ def main(_):
         del batch_txt_emb_value
         return (value_loss.item() / config.v_step)
     
-
-    def _train_value_func_with_regularization(value_function, samples_batched, accelerator, config):
-        """Trains the value function."""
-        """
-        "prompt_ids": prompt_ids,
-        "prompt_embeds": prompt_embeds,
-        "timesteps": timesteps,
-        "latents": latents[:, :-1],  # each entry is the latent before timestep t
-        "next_latents": latents[:, 1:],  # each entry is the latent after timestep t
-        "log_probs": log_probs,
-        "rewards": rewards,
-        "rewards_regularized": None,
-        "regularization": regularization_sum
-        "prompt_embeds_value"
-        """
-        batch_state_original = samples_batched["latents"]
-        new_first_dim = batch_state_original.shape[0] * batch_state_original.shape[1] 
-        batch_state = batch_state_original.reshape(new_first_dim, *batch_state_original.shape[2:])
-        batch_timestep = samples_batched["timesteps"].reshape(new_first_dim, *samples_batched["timesteps"].shape[2:])
-        batch_final_reward = samples_batched["rewards"]
-        batch_txt_emb_value = samples_batched["prompt_embeds_value"]
-        batch_regularization_reward = samples_batched["traj_regularization"]
-        batch_prompt = samples_batched["prompt"]
-
-        batch_timestep = (batch_timestep - 1) * config.sample.num_steps / 1000
-        batch_timestep = batch_timestep.int() 
-
-        repeats = int(new_first_dim / batch_txt_emb_value.shape[0])
-        repeated_txt_emb_value = []
-        for i in range(batch_txt_emb_value.shape[0]):
-            row = batch_txt_emb_value[i].unsqueeze(0)
-            repeated_row = row.repeat(repeats, 1)
-            repeated_txt_emb_value.append(repeated_row)
-
-        batch_txt_emb_value = torch.cat(repeated_txt_emb_value, dim=0)
-
-        pred_value = value_function(
-            batch_state.cuda().detach(),
-            batch_txt_emb_value.cuda().detach(),
-            batch_timestep.cuda().detach(),
-            batch_prompt
-        )
-        # calculate summation of regularization reward after timestep till end
-        batch_final_reward = batch_final_reward.cuda().float()
-
-        repeated_final_reward = []
-        batch_regularization_reward = torch.cumsum(batch_regularization_reward, dim=1)
-        for i in range(batch_final_reward.shape[0]):
-            row = batch_final_reward[i].unsqueeze(0)
-            repeated_row = row.repeat(repeats, 1)
-            # repeated_row += batch_regularization_reward[i].reshape(repeated_row.shape)
-            repeated_row += - config.penalty_constant / 2.0 * batch_regularization_reward[i].reshape(repeated_row.shape)
-            repeated_final_reward.append(repeated_row)
-
-        batch_final_reward = torch.cat(repeated_final_reward, dim=0)
-
-        # batch_final_reward += regularization_sum
-        value_loss = F.mse_loss(
-            pred_value.float(),
-            batch_final_reward.cuda().detach())
-        accelerator.backward(value_loss/config.v_step)
-        del pred_value
-        del batch_state
-        del batch_timestep
-        del batch_final_reward
-        del batch_txt_emb_value
-        return (value_loss.item() / config.v_step)
-
     # Enable TF32 for faster training on Ampere GPUs,
     # cf https://pytorch.org/docs/stable/notes/cuda.html#tensorfloat-32-tf32-on-ampere-devices
     if config.allow_tf32:
@@ -402,6 +333,9 @@ def main(_):
     unet, optimizer = accelerator.prepare(unet, optimizer)
     
     value_function = ValueMulti(50, (4, 64, 64))
+
+    bp()
+
     value_optimizer = torch.optim.AdamW(value_function.parameters(), lr=config.v_lr)
     value_function, value_optimizer = accelerator.prepare(
         value_function, value_optimizer
@@ -483,39 +417,19 @@ def main(_):
                    
             # sample
             with autocast():
-                if config.use_regularization:
-                    images, _, latents, log_probs, all_regularization_terms = pipeline_with_logprob_regularizedReward(
-                        pipeline,
-                        prompt_embeds=prompt_embeds,
-                        negative_prompt_embeds=sample_neg_prompt_embeds,
-                        num_inference_steps=config.sample.num_steps,
-                        guidance_scale=config.sample.guidance_scale,
-                        eta=config.sample.eta,
-                        output_type="pt",
-                        original_unet= pipeline_original.unet,
-                        debug = debug,
-                    )
-                else:
-                    images, _, latents, log_probs = pipeline_with_logprob(
-                        pipeline,
-                        prompt_embeds=prompt_embeds,
-                        negative_prompt_embeds=sample_neg_prompt_embeds,
-                        num_inference_steps=config.sample.num_steps,
-                        guidance_scale=config.sample.guidance_scale,
-                        eta=config.sample.eta,
-                        output_type="pt",
-                    )
+                images, _, latents, log_probs = pipeline_with_logprob(
+                    pipeline,
+                    prompt_embeds=prompt_embeds,
+                    negative_prompt_embeds=sample_neg_prompt_embeds,
+                    num_inference_steps=config.sample.num_steps,
+                    guidance_scale=config.sample.guidance_scale,
+                    eta=config.sample.eta,
+                    output_type="pt",
+                )
 
             latents = torch.stack(latents, dim=1)  # (batch_size, num_steps + 1, 4, 64, 64)
             log_probs = torch.stack(log_probs, dim=1)  # (batch_size, num_steps, 1)
-            
-            # len(all_regularization_terms) = num_steps
-            if config.use_regularization:
-                regularizations = torch.stack(all_regularization_terms, dim=-1) # (batch_size, num_steps)
-                regularization_sum = regularizations.sum(dim=-1) # (batch_size, 1)
-            
-            #print(reward_regularization) 
-            
+                        
             timesteps = pipeline.scheduler.timesteps.repeat(config.sample.batch_size, 1)  # (batch_size, num_steps)
 
             # compute rewards asynchronously
@@ -523,37 +437,19 @@ def main(_):
             # import pdb; pdb.set_trace()
             # yield to to make sure reward computation starts
             time.sleep(0)
-            if config.use_regularization:
-                samples.append(
-                    {
-                        "prompt_ids": prompt_ids,
-                        "prompt": prompts,
-                        "prompt_embeds": prompt_embeds,
-                        "prompt_embeds_value": txt_emb_value,
-                        "timesteps": timesteps,
-                        "latents": latents[:, :-1],  # each entry is the latent before timestep t
-                        "next_latents": latents[:, 1:],  # each entry is the latent after timestep t
-                        "log_probs": log_probs,
-                        "rewards": rewards,
-                        "rewards_regularized": None,
-                        "regularization": regularization_sum,
-                        "traj_regularization": regularizations
-                    }
-                )
-            else:
-                samples.append(
-                    {
-                        "prompt_ids": prompt_ids,
-                        "prompt": prompts,
-                        "prompt_embeds": prompt_embeds,
-                        "prompt_embeds_value": txt_emb_value,
-                        "timesteps": timesteps,
-                        "latents": latents[:, :-1],  # each entry is the latent before timestep t
-                        "next_latents": latents[:, 1:],  # each entry is the latent after timestep t
-                        "log_probs": log_probs,
-                        "rewards": rewards,
-                    }
-                )
+            samples.append(
+                {
+                    "prompt_ids": prompt_ids,
+                    "prompt": prompts,
+                    "prompt_embeds": prompt_embeds,
+                    "prompt_embeds_value": txt_emb_value,
+                    "timesteps": timesteps,
+                    "latents": latents[:, :-1],  # each entry is the latent before timestep t
+                    "next_latents": latents[:, 1:],  # each entry is the latent after timestep t
+                    "log_probs": log_probs,
+                    "rewards": rewards,
+                }
+            )
 
         # wait for all rewards to be computed
         for sample in tqdm(
@@ -599,30 +495,6 @@ def main(_):
             {"reward": rewards, "epoch": epoch, "reward_mean": rewards.mean(), "reward_std": rewards.std()},
             step=global_step,
         )
-        
-        # Modify the rewards with regularization
-        if config.use_regularization:
-            rewards = accelerator.gather(samples["rewards_regularized"]).cpu().numpy()
-        
-        # import pdb;pdb.set_trace()
-        
-        # per-prompt mean/std tracking
-        if config.per_prompt_stat_tracking:
-            # gather the prompts across processes
-            prompt_ids = accelerator.gather(samples["prompt_ids"]).cpu().numpy()
-            prompts = pipeline.tokenizer.batch_decode(prompt_ids, skip_special_tokens=True)
-            advantages = stat_tracker.update(prompts, rewards)
-        else:
-            advantages = (rewards - rewards.mean()) / (rewards.std() + 1e-8)
-        
-        # import pdb;pdb.set_trace()
-        
-        # ungather advantages; we only need to keep the entries corresponding to the samples on this process
-        samples["advantages"] = (
-            torch.as_tensor(advantages)
-            .reshape(accelerator.num_processes, -1)[accelerator.process_index]
-            .to(accelerator.device)
-        )
 
         # del samples["rewards"]
         # del samples["rewards_regularized"]
@@ -652,46 +524,30 @@ def main(_):
             )
             for key in ["timesteps", "latents", "next_latents", "log_probs"]:
                 samples[key] = samples[key][torch.arange(total_batch_size, device=accelerator.device)[:, None], perms]
-            
-            if config.use_regularization:
-                samples["traj_regularization"] = samples["traj_regularization"][torch.arange(total_batch_size, device=accelerator.device)[:, None], perms]
 
             samples_batched = {k: v for k, v in samples.items()}
 
-            if config.v_flag == 1:
-                tot_val_loss = 0
-                value_optimizer.zero_grad()
-                if config.use_regularization:
-                    for v_step in range(config.v_step):
-                        if v_step < config.v_step-1:
-                            with accelerator.no_sync(value_function):
-                                tot_val_loss += _train_value_func_with_regularization(
-                                    value_function, samples_batched, accelerator, config
-                                )
-                        else:
-                            tot_val_loss += _train_value_func_with_regularization(
-                                value_function, samples_batched, accelerator, config
-                            )
+            tot_val_loss = 0
+            value_optimizer.zero_grad()
+            for v_step in range(config.v_step):
+                if v_step < config.v_step-1:
+                    with accelerator.no_sync(value_function):
+                        tot_val_loss += _train_value_func(
+                            value_function, samples_batched, accelerator, config
+                        )
                 else:
-                    for v_step in range(config.v_step):
-                        if v_step < config.v_step-1:
-                            with accelerator.no_sync(value_function):
-                                tot_val_loss += _train_value_func(
-                                    value_function, samples_batched, accelerator, config
-                                )
-                        else:
-                            tot_val_loss += _train_value_func(
-                                value_function, samples_batched, accelerator, config
-                            )
+                    tot_val_loss += _train_value_func(
+                        value_function, samples_batched, accelerator, config
+                    )
 
-                print("value_loss", tot_val_loss)
-                value_loss_list.append(tot_val_loss)
+            print("value_loss", tot_val_loss)
+            value_loss_list.append(tot_val_loss)
 
-                value_optimizer.step()
-                value_optimizer.zero_grad()
+            value_optimizer.step()
+            value_optimizer.zero_grad()
 
-                del tot_val_loss
-                torch.cuda.empty_cache()
+            del tot_val_loss
+            torch.cuda.empty_cache()
 
         avg_value_loss = sum(value_loss_list) / len(value_loss_list)
         info["value_loss"].append(avg_value_loss)

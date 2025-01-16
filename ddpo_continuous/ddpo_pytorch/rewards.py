@@ -48,23 +48,29 @@ def aesthetic_score():
 
 def imagereward():
     import ImageReward as RM
-    from torchvision.transforms import ToPILImage
+    from torchvision.transforms import ToPILImage, ToTensor
+    from torchvision import transforms
+    
     reward_model = RM.load("ImageReward-v1.0").cuda()
-    def _fn(images, prompts, metadata = None):
-        # assert len(prompts) == len(images)
-        # #image_device = imgs[0].device
-        # #reward_model = reward_model.to(image_device)
-        to_pil = ToPILImage()
-        # pil_images = [to_pil(img) for img in tensor]
+    
+    def _fn(images, prompts, metadata=None):
         results = []
-        images = images.cuda()
-        # prompts = tuple(item.to("cuda:6") for item in prompts)
+        to_pil = ToPILImage()
+        to_tensor = ToTensor()
+        
+        if isinstance(images, torch.Tensor):
+            images = images.cuda()
+        else:
+            images = torch.stack([to_tensor(img) for img in images]).cuda()
+        
         with torch.no_grad():
             for index in range(len(images)):
-                #print("computing rewards for image", index)
-                score = reward_model.score(prompts[index], to_pil(images[index]))
+                pil_image = to_pil(images[index])
+                score = reward_model.score(prompts[index], pil_image)
                 results.append(score)
+                
         return np.array(results), {}
+    
     return _fn
 
 def llava_strict_satisfaction():

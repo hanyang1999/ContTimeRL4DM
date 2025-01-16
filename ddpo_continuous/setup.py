@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 setup(
-    name="ddpo_dpok",
+    name="ddpo",
     version="0.0.1",
     packages=["ddpo_pytorch"],
     #python_requires=">=3.10",

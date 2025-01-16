@@ -141,13 +141,6 @@ def get_config():
     # contains fewer than `min_count` values, the mean and std of the entire batch will be used instead.
     config.per_prompt_stat_tracking.min_count = 16
     
-    config.v_flag = 1
-    
-    config.v_lr = 1e-4
-
     config.v_step = 5
-
-    config.v_batch_size = 256
-
 
     return config

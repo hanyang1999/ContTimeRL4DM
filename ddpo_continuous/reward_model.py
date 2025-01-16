@@ -172,12 +172,6 @@ class ValueMulti(nn.Module):
     x = F.relu(self.lin3(x, t))
     return self.lin4(x)
 
-# class ValueMulti_continuous(nn.Module):
-#  def __init__(self,reward_model)
-#  super(ValueMulti, self).__init__()
-#  def foward(self,img,text_emb,t):
-#      return (t/T)* ValueMulti.forward(img,text_emb,t)+(1-t/T) * Reward(img,text_emb)
-
 class ValueMulti_continuous(nn.Module):
   def __init__(self, T, value_multi_model, reward_model):
     super(ValueMulti_continuous, self).__init__()
