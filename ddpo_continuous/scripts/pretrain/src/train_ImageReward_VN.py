@@ -25,6 +25,8 @@ from ImageReward_VN import ImageRewardValue
 from torchvision import transforms
 from huggingface_hub import hf_hub_download
 from typing import Any, Union, List
+os.environ["TORCH_DISTRIBUTED_DEBUG"] = "INFO"
+
 
 
 _MODELS = {
@@ -96,14 +98,21 @@ def load(name: str = "ImageReward-v1.0", device: Union[str, torch.device] = "cud
     # Load state dict into original (frozen) BLIP and MLP
     # The strict=False allows loading the original weights without denoised BLIP parameters
     msg = model.load_state_dict(state_dict, strict=False)
-    
+
     # Initialize denoised BLIP with same weights as original BLIP
     model.denoised_blip.load_state_dict(model.blip.state_dict())
     model.denoised_mlp.load_state_dict(model.mlp.state_dict())
+
+    model.mlp.eval()
     
     # Freeze original models
     model.freeze_original_models()
     print("Checkpoint loaded and original models frozen")
+
+    model.freeze_denoised_layers(fix_rate=0.7)  # Freeze 70% of layers in denoised BLIP
+
+    # for name, param in model.named_parameters():
+    #     print(name, param.shape, param.requires_grad)
     return model
 
 def compute_rewards(images, prompts, prompt_metadata, reward_fn):
@@ -116,73 +125,71 @@ def compute_rewards(images, prompts, prompt_metadata, reward_fn):
     rewards = reward_fn(pil_images, prompts, prompt_metadata)
     return rewards
 
-def prepare_latent_batch(samples_batched):
+
+def decompose_and_batch_samples_list(samples_list, batch_size):
     """
-    Prepare a single batch of latents, rewards, prompts, and timesteps,
-    ensuring that each latent corresponds 1:1 to a prompt.
+    Decompose samples list, shuffle, and create batches of specified size.
+    Returns a list of batched samples, each with batch_size items 
+    (except possibly the last batch which might be smaller).
     """
-    latents_list = []
-    denoised_latents_list = []
-    rewards_list = []
-    prompts_list = []
-    timesteps_list = []
-
-    for sample in samples_batched:
-        # If `sample["latents"]` is already a 4D tensor [N_i, 3, H, W],
-        # we can just collect it to merge later
-        latents_list.append(sample["latents"])  # shape: [N_i, 3, 224, 224]
-        denoised_latents_list.append(sample["denoised_latents"])
-
-        # If `sample["rewards"]` is also a list/tensor of length N_i,
-        # collect it similarly
-        rewards_list.append(sample["rewards"])  # shape: [N_i]
-
-        # If `sample["prompt"]` is a list/tuple of length N_i, flatten it out
-        # If it's just a single string, wrap it in a list
-        if isinstance(sample["prompt"], (list, tuple)):
-            prompts_list.extend(sample["prompt"])  # length: N_i
-        else:
-            prompts_list.append(sample["prompt"])  # length: 1
-
-        # Collect timesteps
-        timesteps_list.append(sample["timesteps"])  # shape: [N_i]
-
-    # Concatenate all latents along the batch dimension
-    # This yields shape [N_total, 3, 224, 224],
-    # where N_total = sum of all N_i across samples
-    latents = torch.cat(latents_list, dim=0)
-    denoised_latents = torch.cat(denoised_latents_list, dim=0)
-    rewards = torch.cat(rewards_list, dim=0)
-    timesteps = torch.cat(timesteps_list, dim=0)
-
-    #return latents, denoised_latents, rewards, prompts_list, timesteps
-
-    # Now prompts_list should have exactly N_total entries,
-    # giving a 1:1 mapping between latents and prompts.
-    return {
-        "latents": latents,
-        "denoised_latents": denoised_latents,
-        "rewards": rewards,
-        "prompts": prompts_list,
-        "timesteps": timesteps,
-    }
-
+    # First decompose all samples
+    all_decomposed = []
+    for sample in samples_list:
+        batch_size_orig = len(sample["prompt"])
+        num_steps = sample["timesteps"].shape[1]
+        
+        for b in range(batch_size_orig):
+            for t in range(num_steps):
+                single_sample = {
+                    # "prompt_ids": sample["prompt_ids"][b],
+                    "prompt": sample["prompt"][b],
+                    "prompt_embeds": sample["prompt_embeds"][b],
+                    "latents": sample["latents"][b,t],
+                    "denoised_latents": sample["denoised_latents"][b,t],
+                    "timesteps": sample["timesteps"][b,t],
+                    "rewards": sample["rewards"][b]
+                }
+                all_decomposed.append(single_sample)
+    
+    # Randomly shuffle the decomposed samples
+    import random
+    random.shuffle(all_decomposed)
+    
+    # Create batches
+    batched_samples = []
+    total_samples = len(all_decomposed)
+    
+    for start_idx in range(0, total_samples, batch_size):
+        end_idx = min(start_idx + batch_size, total_samples)
+        batch = all_decomposed[start_idx:end_idx]
+        
+        # Create a batched sample dictionary
+        batched_sample = {
+            # "prompt_ids": [item["prompt_ids"] for item in batch],
+            "prompt": [item["prompt"] for item in batch],
+            "prompt_embeds": torch.stack([item["prompt_embeds"] for item in batch]),
+            "latents": torch.stack([item["latents"] for item in batch]),
+            "denoised_latents": torch.stack([item["denoised_latents"] for item in batch]),
+            "timesteps": torch.stack([item["timesteps"] for item in batch]),
+            "rewards": torch.tensor([item["rewards"] for item in batch])
+        }
+        batched_samples.append(batched_sample)
+    
+    return batched_samples
 
 def train_value_batch(value_function, samples_batched, pipeline, accelerator, config):
     """Train value function on a single batch."""
-    batch_data = prepare_latent_batch(samples_batched)
+    batch_data = samples_batched
 
     latents = batch_data["latents"].to(accelerator.device)
-    latents = latents.reshape(-1, 4, 64, 64)
 
     denoised_latents = batch_data["denoised_latents"].to(accelerator.device)
-    denoised_latents = denoised_latents.reshape(-1, 4, 64, 64)
 
+    batch_final_reward = batch_data["rewards"].to(accelerator.device)
 
-    batch_final_reward = batch_data["rewards"].to(accelerator.device).repeat(config.sample.num_steps)
-    prompts = [item for item in batch_data["prompts"] for _ in range(config.sample.num_steps)]
+    prompts = batch_data["prompt"]
 
-    timesteps = batch_data["timesteps"].to(accelerator.device).reshape(-1)
+    timesteps = batch_data["timesteps"].to(accelerator.device)\
 
     # Add image resizing transform
     resize_transform = transforms.Compose([
@@ -207,11 +214,10 @@ def train_value_batch(value_function, samples_batched, pipeline, accelerator, co
         denoised_images = resize_transform(denoised_images)
     
     # Forward pass using decoded images
-    pred_value = value_function(images, denoised_images, prompts, timesteps).squeeze(-1)
-
+    pred_value = value_function(images, denoised_images, prompts, timesteps) + 0.0 * sum([torch.sum(param) for param in value_function.parameters()])
     value_loss = F.mse_loss(pred_value.float(), batch_final_reward.float())
     accelerator.backward(value_loss)
-    return value_loss.item()
+    return value_loss
 
 def main(_):
     # Initialize config and logging
@@ -231,6 +237,7 @@ def main(_):
         mixed_precision=config.mixed_precision,
         project_config=accelerator_config,
         gradient_accumulation_steps=config.train.gradient_accumulation_steps * config.sample.num_steps,
+        #partial_pipeline_kwargs={"find_unused_parameters": True},
     )
 
     if accelerator.is_main_process:
@@ -304,7 +311,11 @@ def main(_):
     # Initialize value network and freeze layers
     # Usage in training script
     value_function = load("ImageReward-v1.0", med_config=config.value_network.med_config, device=accelerator.device)
-    value_function.freeze_denoised_layers(fix_rate=0.7)  # Freeze 70% of layers in denoised BLIP
+    
+
+    if hasattr(value_function, "gradient_checkpointing_enable"):
+        value_function.gradient_checkpointing_enable()
+        logger.info("Gradient checkpointing enabled for value network")
     
     # Initialize optimizer for unfrozen parameters only
     optimizer = torch.optim.AdamW(
@@ -317,6 +328,10 @@ def main(_):
 
     # Prepare with accelerator
     value_function, optimizer = accelerator.prepare(value_function, optimizer)
+
+    if isinstance(value_function, torch.nn.parallel.DistributedDataParallel):
+        value_function.find_unused_parameters = True  # Enable unused parameter detection
+    
     executor = futures.ThreadPoolExecutor(max_workers=2)
 
     samples_per_epoch = config.sample.batch_size * accelerator.num_processes * config.sample.num_batches_per_epoch
@@ -342,7 +357,7 @@ def main(_):
 
     # Training loop
     global_step = 0
-    for epoch in range(config.num_epochs):
+    for epoch in tqdm(range(config.num_epochs),desc="Epoch"):
         pipeline.unet.eval()
         samples = []
         prompts = []
@@ -364,15 +379,6 @@ def main(_):
             prompt_embeds = pipeline.text_encoder(prompt_ids)[0]
             
             with torch.no_grad(), accelerator.autocast():
-                # images, _, latents, log_probs = pipeline_with_logprob(
-                #     pipeline,
-                #     prompt_embeds=prompt_embeds,
-                #     negative_prompt_embeds=sample_neg_prompt_embeds,
-                #     num_inference_steps=config.sample.num_steps,
-                #     guidance_scale=config.sample.guidance_scale,
-                #     eta=config.sample.eta,
-                #     output_type="pt",
-                # )
                 images, _, latents, denoised_latents, log_probs = pipeline_with_denoised_latents_logprob(
                     pipeline,
                     prompt_embeds=prompt_embeds,
@@ -397,14 +403,15 @@ def main(_):
             )
                 
             time.sleep(0)
+
             samples.append({
-                "prompt_ids": prompt_ids,
-                "prompt": prompts,
-                "prompt_embeds": prompt_embeds,
-                "latents": latents[:,:-1],  # each entry is the latent before timestep t
-                "denoised_latents": denoised_latents,  # each entry is the latent before timestep t
-                "timesteps": timesteps,
-                "rewards": rewards
+                # "prompt_ids": prompt_ids,
+                "prompt": prompts, # list of strings with length = sample.batchsize
+                "prompt_embeds": prompt_embeds, 
+                "latents": latents[:,:-1],  # sample.batchsize * num_steps * 4 * 64 * 64
+                "denoised_latents": denoised_latents,  # sample.batchsize * num_steps * 4 * 64 * 64
+                "timesteps": timesteps, # sample.batchsize * num_steps
+                "rewards": rewards # sample.batchsize
             })
 
         # Wait for rewards computation
@@ -419,46 +426,56 @@ def main(_):
 
         # samples = {k: torch.cat([s[k] for s in samples]) for k in samples[0].keys()}
         # samples["prompts"] = prompts
+
         # Training phase
         value_function.train()
 
         for inner_epoch in range(config.train.num_inner_epochs):
             total_value_loss = 0
+            counts = 0
             optimizer.zero_grad()
+
+            # Calculate total number of iterations for the progress bar
+            total_iters = sum(len(decompose_and_batch_samples_list(samples[i:i+1], config.train.value_function_batch_size)) * config.v_step 
+                            for i in range(len(samples)))
             
-            num_batches = len(samples) // config.train.batch_size
-            for batch_idx in range(num_batches):
-                start_idx = batch_idx * config.train.batch_size
-                end_idx = start_idx + config.train.batch_size
-                batch_samples = samples[start_idx:end_idx]
-                
-                for v_step in range(config.v_step):
-                    if v_step < config.v_step - 1:
-                        with accelerator.no_sync(value_function):
-                            value_loss = train_value_batch(
+            # Create progress bar
+            pbar = tqdm(total=total_iters, 
+                        desc=f"Inner Epoch {inner_epoch+1}/{config.train.num_inner_epochs}",
+                        leave=False)  # leave=False means the bar will be cleared after completion
+            
+            # Decompose samples into single samples
+            for idx in range(len(samples)):
+                batch_vf_batch_samples = decompose_and_batch_samples_list(samples[idx:idx+1], config.train.value_function_batch_size)
+                for vf_batch_samples in batch_vf_batch_samples:
+                    for _ in range(config.v_step):
+                        value_loss = train_value_batch(
                                 value_function, 
-                                batch_samples, 
+                                vf_batch_samples, 
                                 pipeline,
                                 accelerator, 
                                 config
                             )
-                    else:
-                        value_loss = train_value_batch(
-                            value_function, 
-                            batch_samples, 
-                            pipeline,
-                            accelerator, 
-                            config
-                        )
-                    total_value_loss += value_loss
-            
-            # if accelerator.sync_gradients:
-            #     accelerator.clip_grad_norm_(unet.parameters(), config.train.max_grad_norm)
-            optimizer.step()
-            optimizer.zero_grad()
+                        if accelerator.sync_gradients:
+                            accelerator.clip_grad_norm_(value_function.parameters(), config.train.max_grad_norm)
+                        optimizer.step()
+                        optimizer.zero_grad()
+
+                        current_loss = value_loss.detach().item()
+                        total_value_loss += current_loss
+                        counts += 1
+                        
+                        # Update progress bar with current loss
+                        pbar.set_postfix({'loss': f'{current_loss:.4f}', 
+                                        'avg_loss': f'{(total_value_loss/counts):.4f}'})
+                        pbar.update(1)
+                        
+                        del value_loss
+
+            pbar.close()
 
             # Logging
-            avg_loss = total_value_loss / (num_batches * config.v_step)
+            avg_loss = total_value_loss / counts
             logger.info(f"Epoch={epoch}, Inner={inner_epoch}, Loss={avg_loss:.4f}")
             if accelerator.is_main_process:
                 accelerator.log({"value_loss": avg_loss}, step=global_step)

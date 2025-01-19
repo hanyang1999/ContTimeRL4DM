@@ -159,8 +159,8 @@ def get_config():
     config.seed = 42
     
     # Basic training settings
-    config.num_epochs = 10
-    config.save_freq = 200
+    config.num_epochs = 200
+    config.save_freq = 40
     config.num_checkpoint_limit = 5
     config.mixed_precision = "fp16"
     config.logdir = "pretrain_ckpts"
@@ -179,24 +179,26 @@ def get_config():
     # Training parameters
     config.train = config_dict.ConfigDict()
     config.train.batch_size = 1
-    config.train.learning_rate = 1e-5
+    config.train.learning_rate = 5e-6
     config.train.adam_beta1 = 0.9
     config.train.adam_beta2 = 0.999
     config.train.adam_weight_decay = 0.01
     config.train.adam_epsilon = 1e-8
-    config.train.gradient_accumulation_steps = 8
+    config.train.gradient_accumulation_steps = 32
     config.train.num_inner_epochs = 1
+    config.train.max_grad_norm = 1.0
     
     # Sampling parameters
     config.sample = config_dict.ConfigDict()
-    config.sample.batch_size = 2
-    config.sample.num_batches_per_epoch = 4
+    config.sample.batch_size = 8
+    config.sample.num_batches_per_epoch = 8
     config.sample.num_steps = 50
     config.sample.guidance_scale = 7.5
     config.sample.eta = 1.0
     
     # Training steps
     config.v_step = 2
+    config.train.value_function_batch_size = 50
     
     # Prompt and reward settings
     config.prompt_fn = "single_prompt"

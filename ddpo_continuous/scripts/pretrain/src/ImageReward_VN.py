@@ -61,12 +61,12 @@ class ImageRewardValue(nn.Module):
         self.denoised_blip = BLIP_Pretrain(image_size=224, vit='large', med_config=med_config)
         self.denoised_mlp = MLP(768)
         
-        self.preprocess = _transform(224)
+        # self.preprocess = _transform(224)
         self.mean = 0.16717362830052426
         self.std = 1.0333394966054072
         
         # Freeze original BLIP and MLP
-        self.freeze_original_models()
+        # self.freeze_original_models()
 
     def skip_func(self, timesteps):
         return torch.cos((torch.pi / 2) * timesteps/1000)
@@ -100,50 +100,15 @@ class ImageRewardValue(nn.Module):
             if image_fix_num in name:
                 break
 
-    def score(self, prompt, image):
-        if (type(image).__name__=='list'):
-            _, rewards = self.inference_rank(prompt, image)
-            return rewards
-
-        cur_device = next(self.blip.parameters()).device
-            
-        # Use original frozen BLIP and MLP for scoring
-        text_input = self.blip.tokenizer(prompt, padding='max_length', truncation=True, max_length=35, return_tensors="pt").to(cur_device)
-        
-        if isinstance(image, Image.Image):
-            pil_image = image
-        elif isinstance(image, str) and os.path.isfile(image):
-            pil_image = Image.open(image)
-        else:
-            raise TypeError(r'This image parameter type has not been supported yet. Please pass PIL.Image or file path str.')
-            
-        image = self.preprocess(pil_image).unsqueeze(0).to(cur_device)
-        image_embeds = self.blip.visual_encoder(image).to(cur_device)
-        
-        image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long).to(cur_device)
-        text_output = self.blip.text_encoder(
-            text_input.input_ids,
-            attention_mask=text_input.attention_mask,
-            encoder_hidden_states=image_embeds,
-            encoder_attention_mask=image_atts,
-            return_dict=True,
-        )
-        
-        txt_features = text_output.last_hidden_state[:,0,:].float()
-        rewards = self.mlp(txt_features)
-        rewards = (rewards - self.mean) / self.std
-        
-        return rewards.detach().cpu().numpy().item()
-
     def forward(self, images, denoised_images, prompts, timesteps=None):
         cur_device = next(self.blip.parameters()).device
+
+        text_input = self.blip.tokenizer(prompts, padding='max_length', truncation=True, max_length=35, return_tensors="pt").to(cur_device)
         
         # Process original images with frozen BLIP and MLP
         image_embeds = self.blip.visual_encoder(images).to(cur_device)
         image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long).to(cur_device)
 
-        text_input = self.blip.tokenizer(prompts, padding='max_length', truncation=True, max_length=35, return_tensors="pt").to(cur_device)
-        
         text_output = self.blip.text_encoder(
             text_input.input_ids,
             encoder_hidden_states=image_embeds,
@@ -170,4 +135,4 @@ class ImageRewardValue(nn.Module):
         denoised_value = self.denoised_mlp(denoised_combined_embedding)
         denoised_value = (denoised_value - self.mean) / self.std
         
-        return self.skip_func(timesteps) * value + (1-self.skip_func(timesteps)) * denoised_value
+        return self.skip_func(timesteps) * value.squeeze(-1) + (1-self.skip_func(timesteps)) * denoised_value.squeeze(-1)

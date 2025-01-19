@@ -306,3 +306,6 @@ tags
 wandb/
 logs/
 notebooks/
+
+scripts/pretrain/src/pretrain_ckpts/*
+scripts/pretrain/src/wandb
