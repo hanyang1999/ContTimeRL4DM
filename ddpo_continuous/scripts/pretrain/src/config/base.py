@@ -159,8 +159,8 @@ def get_config():
     config.seed = 42
     
     # Basic training settings
-    config.num_epochs = 200
-    config.save_freq = 40
+    config.num_epochs = 100
+    config.save_freq = 20
     config.num_checkpoint_limit = 5
     config.mixed_precision = "fp16"
     config.logdir = "pretrain_ckpts"
@@ -179,7 +179,7 @@ def get_config():
     # Training parameters
     config.train = config_dict.ConfigDict()
     config.train.batch_size = 1
-    config.train.learning_rate = 5e-6
+    config.train.learning_rate = 1e-5
     config.train.adam_beta1 = 0.9
     config.train.adam_beta2 = 0.999
     config.train.adam_weight_decay = 0.01

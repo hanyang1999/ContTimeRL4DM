@@ -119,6 +119,10 @@ def load(name: str = "ImageReward-v1.0", device: Union[str, torch.device] = "cud
 def validate_model_modes(model):
     """Verify that original MLP is in eval mode while denoised_mlp respects training mode"""
     
+    # Get the actual model from DDP wrapper if necessary
+    if hasattr(model, 'module'):
+        model = model.module
+    
     # Check original MLP is always in eval mode
     if model.mlp.training:
         print("Warning: Original MLP is in training mode when it should be in eval mode")
@@ -133,6 +137,7 @@ def validate_model_modes(model):
         if isinstance(module, nn.Dropout):
             if module.training != model.training:
                 print(f"Warning: Dropout layer {name} in denoised_mlp has incorrect training mode")
+                
 
 def compute_rewards(images, prompts, prompt_metadata, reward_fn):
     """Compute rewards using the reward function."""

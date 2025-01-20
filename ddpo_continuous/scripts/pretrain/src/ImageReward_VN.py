@@ -69,6 +69,20 @@ class ImageRewardValue(nn.Module):
         
         # Freeze original BLIP and MLP
         # self.freeze_original_models()
+    
+    def train(self, mode=True):
+        """Override train method to keep original MLP in eval mode"""
+        super().train(mode)
+        # Force original MLP to stay in eval mode regardless of model's training mode
+        self.mlp.eval()
+        return self
+
+    def eval(self):
+        """Override eval method"""
+        super().eval()
+        # Ensure original MLP stays in eval mode
+        self.mlp.eval()
+        return self
 
     def skip_func(self, timesteps):
         return torch.cos((torch.pi / 2) * timesteps/1000)
@@ -104,6 +118,8 @@ class ImageRewardValue(nn.Module):
                 break
 
     def forward(self, images, denoised_images, prompts, timesteps=None):
+        self.mlp.eval()
+
         cur_device = next(self.blip.parameters()).device
 
         text_input = self.blip.tokenizer(prompts, padding='max_length', truncation=True, max_length=35, return_tensors="pt").to(cur_device)
