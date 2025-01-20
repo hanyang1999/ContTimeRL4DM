@@ -179,7 +179,7 @@ def get_config():
     # Training parameters
     config.train = config_dict.ConfigDict()
     config.train.batch_size = 1
-    config.train.learning_rate = 1e-5
+    config.train.learning_rate = 1e-6
     config.train.adam_beta1 = 0.9
     config.train.adam_beta2 = 0.999
     config.train.adam_weight_decay = 0.01
@@ -197,7 +197,7 @@ def get_config():
     config.sample.eta = 1.0
     
     # Training steps
-    config.v_step = 2
+    config.v_step = 5
     config.train.value_function_batch_size = 50
     
     # Prompt and reward settings

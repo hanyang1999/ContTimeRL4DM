@@ -25,6 +25,7 @@ from concurrent import futures
 from ImageReward_VN import ImageRewardValue
 from torchvision import transforms
 from huggingface_hub import hf_hub_download
+from transformers import get_scheduler
 from typing import Any, Union, List
 os.environ["TORCH_DISTRIBUTED_DEBUG"] = "INFO"
 
@@ -346,6 +347,9 @@ def main(_):
         value_function.gradient_checkpointing_enable()
         logger.info("Gradient checkpointing enabled for value network")
     
+    warmup_ratio = 0.1         # 10% of total steps for warmup
+    num_warmup_steps = int(config.num_epochs * warmup_ratio)
+    
     # Initialize optimizer for unfrozen parameters only
     optimizer = torch.optim.AdamW(
         filter(lambda p: p.requires_grad, value_function.parameters()),
@@ -354,6 +358,13 @@ def main(_):
         weight_decay=config.train.adam_weight_decay,
         eps=config.train.adam_epsilon,
     )
+
+    scheduler = get_scheduler(
+    name="cosine",  # Options: 'linear', 'cosine', 'polynomial', etc.
+    optimizer=optimizer,
+    num_warmup_steps=num_warmup_steps,
+    num_training_steps=config.num_epochs,
+)
 
     # Prepare with accelerator
     value_function, optimizer = accelerator.prepare(value_function, optimizer)
@@ -500,7 +511,7 @@ def main(_):
                         pbar.update(1)
                         
                         del value_loss
-
+            scheduler.step()
             pbar.close()
 
             # Logging
