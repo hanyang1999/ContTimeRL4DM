@@ -56,6 +56,8 @@ class ImageRewardValue(nn.Module):
         # Original BLIP and MLP for latents (frozen)
         self.blip = BLIP_Pretrain(image_size=224, vit='large', med_config=med_config)
         self.mlp = MLP(768)
+
+        self.mlp.eval()
         
         # New BLIP and MLP for denoised latents (learnable)
         self.denoised_blip = BLIP_Pretrain(image_size=224, vit='large', med_config=med_config)
@@ -77,6 +79,7 @@ class ImageRewardValue(nn.Module):
             param.requires_grad = False
         for param in self.mlp.parameters():
             param.requires_grad = False
+        self.mlp.eval()
             
     def freeze_denoised_layers(self, fix_rate=0.5):
         """Freeze layers up to fix_rate in denoised BLIP."""
@@ -106,19 +109,20 @@ class ImageRewardValue(nn.Module):
         text_input = self.blip.tokenizer(prompts, padding='max_length', truncation=True, max_length=35, return_tensors="pt").to(cur_device)
         
         # Process original images with frozen BLIP and MLP
-        image_embeds = self.blip.visual_encoder(images).to(cur_device)
-        image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long).to(cur_device)
+        with torch.no_grad():
+            image_embeds = self.blip.visual_encoder(images).to(cur_device)
+            image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long).to(cur_device)
 
-        text_output = self.blip.text_encoder(
-            text_input.input_ids,
-            encoder_hidden_states=image_embeds,
-            encoder_attention_mask=image_atts,
-            return_dict=True,
-        )
-        
-        combined_embedding = text_output.last_hidden_state[:, 0, :].float()
-        value = self.mlp(combined_embedding)
-        value = (value - self.mean) / self.std
+            text_output = self.blip.text_encoder(
+                text_input.input_ids,
+                encoder_hidden_states=image_embeds,
+                encoder_attention_mask=image_atts,
+                return_dict=True,
+            )
+            
+            combined_embedding = text_output.last_hidden_state[:, 0, :].float()
+            value = self.mlp(combined_embedding)
+            value = (value - self.mean) / self.std
 
         # Process denoised images with learnable BLIP and MLP
         denoised_image_embeds = self.denoised_blip.visual_encoder(denoised_images).to(cur_device)

@@ -3,6 +3,7 @@ import datetime
 import time
 from collections import defaultdict
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from absl import app, flags
 from ml_collections import config_flags
@@ -115,6 +116,24 @@ def load(name: str = "ImageReward-v1.0", device: Union[str, torch.device] = "cud
     #     print(name, param.shape, param.requires_grad)
     return model
 
+def validate_model_modes(model):
+    """Verify that original MLP is in eval mode while denoised_mlp respects training mode"""
+    
+    # Check original MLP is always in eval mode
+    if model.mlp.training:
+        print("Warning: Original MLP is in training mode when it should be in eval mode")
+        
+    # Check denoised_mlp follows model's training mode
+    if model.denoised_mlp.training != model.training:
+        print(f"Warning: denoised_mlp training mode ({model.denoised_mlp.training}) "
+              f"doesn't match model training mode ({model.training})")
+    
+    # Check dropout layers specifically
+    for name, module in model.denoised_mlp.named_modules():
+        if isinstance(module, nn.Dropout):
+            if module.training != model.training:
+                print(f"Warning: Dropout layer {name} in denoised_mlp has incorrect training mode")
+
 def compute_rewards(images, prompts, prompt_metadata, reward_fn):
     """Compute rewards using the reward function."""
     pil_images = []
@@ -178,6 +197,11 @@ def decompose_and_batch_samples_list(samples_list, batch_size):
     return batched_samples
 
 def train_value_batch(value_function, samples_batched, pipeline, accelerator, config):
+
+    # Check model modes
+    if accelerator.is_main_process:
+        validate_model_modes(value_function)
+
     """Train value function on a single batch."""
     batch_data = samples_batched
 
