@@ -37,6 +37,8 @@ from models.logger import BaseLogger
 from utils import (fix_legacy_dict, mkdir_p, print0,
                    weight_norm)
 
+import torch.distributed as dist
+import datetime
 
 def rescale(X, batch=True):
     return (X - (-1)) / (2)
@@ -335,6 +337,15 @@ if __name__ == "__main__":
     )
 
     # train
+    # if dist.get_rank() == 1:
+    #     breakpoint()
+    #breakpoint()
+    unique_id = datetime.datetime.now().strftime("%Y.%m.%d_%H.%M.%S")
+    if not args.run:
+        args.run = unique_id
+    else:
+        args.run += "_" + unique_id
+
     model_cfg_name = os.path.basename(args.config).split(".")[0]
     logdir = os.path.join(f"results/{cfg.data.name}/{model_cfg_name}", args.run)
     if local_rank == 0:
@@ -350,6 +361,7 @@ if __name__ == "__main__":
         wandb.init(
             project=proj_name,
             name=f"{model_cfg_name}_{args.run}",
+            entity="contiRL4diffusion",  # Specify the entity if needed
             dir=logdir,
             config=OmegaConf.to_container(cfg),
         )
