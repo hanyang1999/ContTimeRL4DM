@@ -48,7 +48,7 @@ training:
   sampler_ckpt: pretrained/cifar10_ddpm/model.ckpt.pth
   value_ckpt: Null
   fid_epoch: 1  # calculate FID per this much epoch, None means not calculate
-  n_epochs: 200
+  n_epochs: 100
   batchsize: 128
   sampling_batchsize: 100
   n_fid_samples: 10000

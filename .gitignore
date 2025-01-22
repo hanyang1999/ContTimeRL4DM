@@ -1,1 +1,5 @@
 repos/
+Diffusion-by-MaxEntIRL-main/datasets/*
+Diffusion-by-MaxEntIRL-main/pretrained
+Diffusion-by-MaxEntIRL-main/dropbox_download.zip
+Diffusion-by-MaxEntIRL-main/results

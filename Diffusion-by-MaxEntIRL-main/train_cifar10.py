@@ -395,10 +395,13 @@ if __name__ == "__main__":
         ############################
         # Compute FID Score
         ############################
+
+        #breakpoint()
+
         if cfg.training.fid_epoch is not None and epoch % cfg.training.fid_epoch == 0:
             output_path = os.path.join(logdir, f"img_epoch_{epoch}")
             mkdir_p(output_path)
-            data_path = os.path.join("datasets", f"cifar10_train_png")
+            data_path = os.path.join("datasets", f"cifar10_train_png_pil.npz")
             if not os.path.exists(data_path):
                 print0("dataset not found")
                 continue
