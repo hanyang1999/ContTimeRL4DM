@@ -76,7 +76,8 @@ def imagereward():
 
     # Model settings
     config.pretrained = ml_collections.ConfigDict()
-    config.pretrained.model = "runwayml/stable-diffusion-v1-5"
+    #config.pretrained.model = "runwayml/stable-diffusion-v1-5"
+    config.pretrained.model = "CompVis/stable-diffusion-v1-4"
     config.pretrained.revision = None
 
     config.value_network = ml_collections.ConfigDict()
