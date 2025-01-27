@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from PIL import Image
 from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, Normalize
-from models.BLIP.blip_pretrain import BLIP_Pretrain
+from scripts.src.models.BLIP.blip_pretrain import BLIP_Pretrain
 
 try:
     from torchvision.transforms import InterpolationMode
@@ -85,8 +85,7 @@ class ImageRewardValue(nn.Module):
         return self
 
     def skip_func(self, timesteps):
-        return torch.cos((torch.pi / 2) * timesteps/1000)
-        #return 1.0 - timesteps/1000
+        return torch.cos((torch.pi / 2) * (timesteps-1)/1000)
     
     def freeze_original_models(self):
         """Freeze the original BLIP and MLP models"""

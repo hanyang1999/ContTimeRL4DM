@@ -46,22 +46,24 @@ def aesthetic_score():
 
     return _fn
 
-def imagereward():
+def imagereward(device="cuda"):
     import ImageReward as RM
     from torchvision.transforms import ToPILImage, ToTensor
     from torchvision import transforms
-    
-    reward_model = RM.load("ImageReward-v1.0").cuda()
+    if device == "cuda":
+        reward_model = RM.load("ImageReward-v1.0").cuda()
+    else:
+        reward_model = RM.load("ImageReward-v1.0").cpu()
     
     def _fn(images, prompts, metadata=None):
         results = []
         to_pil = ToPILImage()
         to_tensor = ToTensor()
-        
-        if isinstance(images, torch.Tensor):
-            images = images.cuda()
-        else:
-            images = torch.stack([to_tensor(img) for img in images]).cuda()
+        if device == "cuda":
+            if isinstance(images, torch.Tensor):
+                images = images.cuda()
+            else:
+                images = torch.stack([to_tensor(img) for img in images]).cuda()
         
         with torch.no_grad():
             for index in range(len(images)):
