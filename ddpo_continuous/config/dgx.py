@@ -47,58 +47,6 @@ def compressibility():
     }
     return config
 
-def compressibility_pretrain():
-    
-    config = base.get_config()
-    
-    config.score_fixed = False
-    
-    config.run_name = "ddpo_compressibility"
-    
-    config.use_regularization = True
-    
-    config.penalty_constant = 0
-
-    config.pretrained.model = "CompVis/stable-diffusion-v1-4"
-
-    config.num_epochs = 400
-    config.use_lora = True
-    config.save_freq = 20
-    config.num_checkpoint_limit = 100000000
-
-    # the DGX machine I used had 8 GPUs, so this corresponds to 8 * 8 * 4 = 256 samples per epoch.
-    config.sample.batch_size = 4 #8
-    config.sample.num_batches_per_epoch = 4
-
-    # this corresponds to (4 * 4) / (2 * 2) = 4 gradient updates per epoch.
-    config.train.num_inner_epochs = 5
-    config.train.batch_size = 2
-    config.train.gradient_accumulation_steps = 2
-
-    # prompting
-    config.prompt_fn = "imagenet_animals"
-    config.prompt_fn_kwargs = {}
-
-    # rewards
-    config.reward_fn = "jpeg_compressibility"
-
-    config.per_prompt_stat_tracking = {
-        "buffer_size": 16,
-        "min_count": 16,
-    }
-    return config
-
-def incompressibility():
-    # config = compressibility_pretrain()
-    config = compressibility()
-    
-    #config.run_name = "ddpo_incompressibility"
-    config.run_name = f"ddpo_incompressibility_no_regularization_eta={config.sample.eta}_decay={config.sample.decay.type}_lr={config.train.learning_rate}_clip={config.train.clip_range}_seed={config.seed}"
-
-    config.reward_fn = "jpeg_incompressibility"
-    
-    return config
-
 def imagereward():
     config = compressibility()
     

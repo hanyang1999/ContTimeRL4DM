@@ -156,15 +156,15 @@ def init_value_function(config, accelerator):
         value_function.gradient_checkpointing_enable()
         logger.info("Gradient checkpointing enabled for value network")
     
-    warmup_ratio = 0.1
+    warmup_ratio = config.pretrain_VN.warmup_ratio
     num_warmup_steps = int(config.num_epochs * warmup_ratio)
     
     optimizer = torch.optim.AdamW(
         filter(lambda p: p.requires_grad, value_function.parameters()),
-        lr=config.train.learning_rate,
-        betas=(config.train.adam_beta1, config.train.adam_beta2),
-        weight_decay=config.train.adam_weight_decay,
-        eps=config.train.adam_epsilon,
+        lr=config.pretrain_VN.learning_rate,
+        betas=(config.pretrain_VN.adam_beta1, config.pretrain_VN.adam_beta2),
+        weight_decay=config.pretrain_VN.adam_weight_decay,
+        eps=config.pretrain_VN.adam_epsilon,
     )
 
     scheduler = get_scheduler(

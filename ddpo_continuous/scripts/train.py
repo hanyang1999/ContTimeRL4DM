@@ -27,7 +27,6 @@ from PIL import Image
 
 tqdm = partial(tqdm.tqdm, dynamic_ncols=True)
 
-
 FLAGS = flags.FLAGS
 config_flags.DEFINE_config_file("config", "config/base.py", "Training configuration.")
 

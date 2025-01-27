@@ -8,7 +8,6 @@ from ml_collections import config_flags
 from accelerate import Accelerator
 from accelerate.utils import set_seed, ProjectConfiguration
 from accelerate.logging import get_logger
-from transformers import CLIPTokenizer
 from diffusers import StableDiffusionPipeline, DDIMScheduler
 from tqdm.auto import tqdm
 from functools import partial
@@ -30,7 +29,10 @@ def main(_):
     # Initialize config and logging
     config = FLAGS.config
     unique_id = datetime.datetime.now().strftime("%Y.%m.%d_%H.%M.%S")
-    config.run_name = f"{config.run_name}_{unique_id}" if config.run_name else unique_id
+    if not config.run_name:
+        config.run_name = unique_id
+    else:
+        config.run_name += "_" + unique_id
 
     # Setup accelerator
     accelerator_config = ProjectConfiguration(
@@ -43,7 +45,7 @@ def main(_):
         log_with="wandb",
         mixed_precision=config.mixed_precision,
         project_config=accelerator_config,
-        gradient_accumulation_steps=config.train.gradient_accumulation_steps * config.sample.num_steps,
+        gradient_accumulation_steps=config.pretrain_VN.gradient_accumulation_steps * config.sample.num_steps,
     )
 
     if accelerator.is_main_process:
@@ -112,23 +114,23 @@ def main(_):
     # Training loop setup
     samples_per_epoch = config.sample.batch_size * accelerator.num_processes * config.sample.num_batches_per_epoch
     total_train_batch_size = (
-        config.train.batch_size * accelerator.num_processes * config.train.gradient_accumulation_steps
+        config.pretrain_VN.batch_size * accelerator.num_processes * config.pretrain_VN.gradient_accumulation_steps
     )
 
     logger.info("***** Running training *****")
     logger.info(f"  Num Epochs = {config.num_epochs}")
     logger.info(f"  Num Processes = {accelerator.num_processes}")
     logger.info(f"  Sample batch size per device = {config.sample.batch_size}")
-    logger.info(f"  Train batch size per device = {config.train.batch_size}")
-    logger.info(f"  Gradient Accumulation steps = {config.train.gradient_accumulation_steps}")
+    logger.info(f"  Train batch size per device = {config.pretrain_VN.batch_size}")
+    logger.info(f"  Gradient Accumulation steps = {config.pretrain_VN.gradient_accumulation_steps}")
     logger.info(f"  Total number of samples per epoch = {samples_per_epoch}")
     logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_train_batch_size}")
     logger.info(f"  Number of gradient updates per inner epoch = {samples_per_epoch // total_train_batch_size}")
-    logger.info(f"  Number of inner epochs = {config.train.num_inner_epochs}")
+    logger.info(f"  Number of inner epochs = {config.pretrain_VN.num_inner_epochs}")
 
-    assert config.sample.batch_size >= config.train.batch_size
-    assert config.sample.batch_size % config.train.batch_size == 0
-    assert samples_per_epoch % total_train_batch_size == 0
+    assert (config.sample.batch_size * config.sample.num_steps) >= config.pretrain_VN.batch_size
+    assert (config.sample.batch_size * config.sample.num_steps) % config.pretrain_VN.batch_size == 0
+    assert (samples_per_epoch * config.sample.num_steps) % total_train_batch_size == 0
 
     # Training loop
     global_step = 0
@@ -202,25 +204,25 @@ def main(_):
         # Training phase
         value_function.train()
 
-        for inner_epoch in range(config.train.num_inner_epochs):
+        for inner_epoch in range(config.pretrain_VN.num_inner_epochs):
             total_value_loss = 0
             counts = 0
             optimizer.zero_grad()
 
             # Calculate total number of iterations for the progress bar
-            total_iters = sum(len(decompose_and_batch_samples_list(samples[i:i+1], config.train.value_function_batch_size)) * config.v_step 
+            total_iters = sum(len(decompose_and_batch_samples_list(samples[i:i+1], config.pretrain_VN.batch_size)) * config.v_step 
                             for i in range(len(samples)))
             
             # Create progress bar
             pbar = tqdm(total=total_iters, 
-                       desc=f"Inner Epoch {inner_epoch+1}/{config.train.num_inner_epochs}",
+                       desc=f"Inner Epoch {inner_epoch+1}/{config.pretrain_VN.num_inner_epochs}",
                        leave=False)
             
             # Train on decomposed samples
             for idx in range(len(samples)):
                 batch_vf_batch_samples = decompose_and_batch_samples_list(
                     samples[idx:idx+1], 
-                    config.train.value_function_batch_size
+                    config.pretrain_VN.batch_size
                 )
                 
                 for vf_batch_samples in batch_vf_batch_samples:
@@ -236,7 +238,7 @@ def main(_):
                         if accelerator.sync_gradients:
                             accelerator.clip_grad_norm_(
                                 value_function.parameters(), 
-                                config.train.max_grad_norm
+                                config.pretrain_VN.max_grad_norm
                             )
                             
                         optimizer.step()
