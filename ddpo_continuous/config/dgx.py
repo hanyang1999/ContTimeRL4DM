@@ -142,6 +142,7 @@ def compressibility_continuous():
     config = base.get_config()
 
     config.pretrained.model = "CompVis/stable-diffusion-v1-4"
+    config.pretrained.revision = None
 
     config.num_epochs = 100
     config.use_lora = True

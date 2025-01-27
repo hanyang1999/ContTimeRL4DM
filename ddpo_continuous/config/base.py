@@ -51,7 +51,7 @@ def get_config():
     # number of sampler inference steps.
     sample.num_steps = 50
     # eta parameter for the DDIM sampler. this controls the amount of noise injected into the sampling process, with 0.0
-    # being fully deterministic and 1.0 being equivalent to the DDPM sampler.
+    # being fully deterministic and 1.0 being to the DDPM sampler.
     sample.eta = 1.0
     # classifier-free guidance weight. 1.0 is no guidance.
     sample.guidance_scale = 7.0

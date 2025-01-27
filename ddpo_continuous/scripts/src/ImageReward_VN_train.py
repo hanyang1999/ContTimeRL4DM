@@ -287,4 +287,81 @@ def inference_value_batch(value_function, sample_dict, pipeline, accelerator, su
     values = values.reshape(batch_size, num_samples)
     
     return values
+
+
+def inference_value_grad_batch(value_function, sample_dict, pipeline, accelerator, sub_batch_size=50):
+    """Train value function on batches to avoid memory issues.
+    
+    Args:
+        value_function: The value function model
+        sample_dict: Dictionary containing batch data
+        pipeline: Pipeline for processing
+        accelerator: Accelerator for device management
+        sub_batch_size: Number of samples to process in each sub-batch
+    
+    Returns:
+        Tensor of shape (batch_size, num_samples, output_dim)
+    """
+    if accelerator.is_main_process:
+        validate_model_modes(value_function)
+
+    batch_data = sample_dict
+    latents = batch_data["latents"].to(accelerator.device)
+    denoised_latents = batch_data["denoised_latents"].to(accelerator.device)
+    prompts = batch_data["prompt"]
+    timesteps = batch_data["timesteps"].to(accelerator.device)
+
+    batch_size, num_samples = latents.shape[0], latents.shape[1]
+    total_samples = batch_size * num_samples
+    
+    # Reshape inputs
+    latents = latents.reshape(-1, 4, 64, 64)
+    denoised_latents = denoised_latents.reshape(-1, 4, 64, 64)
+    timesteps = timesteps.reshape(-1)
+    prompts = [p for p in prompts for _ in range(num_samples)]
+
+    resize_transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.Normalize((0.48145466, 0.4578275, 0.40821073), 
+                           (0.26862954, 0.26130258, 0.27577711))
+    ])
+
+    # Process in sub-batches
+    all_values = []
+    for i in range(0, total_samples, sub_batch_size):
+        end_idx = min(i + sub_batch_size, total_samples)
+        
+        with torch.no_grad():
+            # Process current sub-batch
+            sub_latents = latents[i:end_idx]
+            sub_denoised = denoised_latents[i:end_idx]
+            sub_prompts = prompts[i:end_idx]
+            sub_timesteps = timesteps[i:end_idx]
+
+            # Decode images
+            images = pipeline.vae.decode(sub_latents / pipeline.vae.config.scaling_factor, return_dict=False)[0]
+            images = (images + 1) / 2
+            images = images.clamp(0, 1)
+            images = resize_transform(images)
+
+            denoised_images = pipeline.vae.decode(sub_denoised / pipeline.vae.config.scaling_factor, return_dict=False)[0]
+            denoised_images = (denoised_images + 1) / 2
+            denoised_images = denoised_images.clamp(0, 1)
+            denoised_images = resize_transform(denoised_images)
+
+            # Get value function output for sub-batch
+            sub_values = value_function(images, denoised_images, sub_prompts, sub_timesteps)
+            all_values.append(sub_values)
+
+            # Free memory
+            del images, denoised_images, sub_values
+            torch.cuda.empty_cache()
+
+    # Concatenate all sub-batch results
+    values = torch.cat(all_values, dim=0)
+    
+    # Reshape to original batch dimensions
+    values = values.reshape(batch_size, num_samples)
+    
+    return values
     
