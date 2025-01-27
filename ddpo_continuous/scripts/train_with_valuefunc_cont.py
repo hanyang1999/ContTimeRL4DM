@@ -30,7 +30,7 @@ from src.ImageReward_VN_train import (
     init_value_function,
     train_value_batch,
     decompose_and_batch_samples_list,
-    inference_value_batch
+    inference_value_grad_batch
 )
 
 tqdm = partial(tqdm.tqdm, dynamic_ncols=True)
@@ -431,7 +431,7 @@ def main(_):
             disable=not accelerator.is_local_main_process,
             position=0,
         ):
-            sample["VN_value"] = inference_value_batch(value_function, sample, pipeline, accelerator)
+            sample["VN_grad"] = inference_value_grad_batch(value_function, sample, pipeline, accelerator)
         
         # Start training of diffusion models
         

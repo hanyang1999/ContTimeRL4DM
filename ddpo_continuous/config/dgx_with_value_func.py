@@ -51,6 +51,8 @@ def compressibility():
 
 def imagereward():
     config = compressibility()
+
+    config.save_freq = 1
     
     #config.run_name = "ddpo_incompressibility"
 
@@ -58,13 +60,13 @@ def imagereward():
     config.reward_fn = "imagereward"
 
     config.sample.batch_size = 8
-    config.sample.num_batches_per_epoch = 8
+    config.sample.num_batches_per_epoch = 16
 
     config.train.clip_range = 1e-5
     config.train.learning_rate = 3e-5
 
     config.train.batch_size = 2
-    config.train.gradient_accumulation_steps = 16
+    config.train.gradient_accumulation_steps = 32
 
     # config.prompt_fn = "activities"
     # config.prompt_fn = "simple_animal"
@@ -78,7 +80,7 @@ def imagereward():
     config.pretrained = ml_collections.ConfigDict()
     #config.pretrained.model = "runwayml/stable-diffusion-v1-5"
     config.pretrained.model = "CompVis/stable-diffusion-v1-4"
-    config.pretrained.revision = None
+    config.pretrained.revision = "main"
 
     config.value_network = ml_collections.ConfigDict()
     config.value_network.med_config = "config/med_config.json"
