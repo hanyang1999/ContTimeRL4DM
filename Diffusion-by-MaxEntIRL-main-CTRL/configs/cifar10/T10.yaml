@@ -42,6 +42,7 @@ trainer:
   entropy_in_value: Null
   velocity_in_value: Null
   time_cost_sig: True
+  #value_grad_clip: True
     # skip_running_last: 2
   
 training:
@@ -54,9 +55,9 @@ training:
   n_fid_samples: 10000
   n_critic: 1
   n_generator: 1
-  lr: 1e-7
-  v_lr: 1e-5
+  lr: 2e-7
+  v_lr: 1e-6
   seed: 112233
   log_every: 50
-  beta_lr: 1e-5
+  beta_lr: 1e-6
 

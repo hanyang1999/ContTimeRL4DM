@@ -258,6 +258,7 @@ if __name__ == "__main__":
     print_size(net)
     sample_shape = cfg.sampler.sample_shape
     sampler = instantiate(cfg.sampler, net=net).to(device)
+    # f is the energy function
     f = instantiate(cfg.energy).to(device) if cfg.energy is not None else None
     # load checkpoint
     if cfg.training.sampler_ckpt:
@@ -270,6 +271,7 @@ if __name__ == "__main__":
     net = net.to(device)
     net.eval()
     if cfg.value is not None:
+        # v is the value function
         v = instantiate(cfg.value)
         if cfg.training.value_ckpt is not None:
             ckpt = torch.load(cfg.training.value_ckpt, map_location="cpu")
@@ -282,6 +284,7 @@ if __name__ == "__main__":
         v = None
 
     ##  optimizer
+    #breakpoint()
     tune_beta = hasattr(sampler, "trainable_beta") and sampler.trainable_beta and cfg.training.get("beta_lr") is not None
 
     if tune_beta:

@@ -1,0 +1,7 @@
+omegaconf
+hydra-core
+tqdm
+scikit-learn
+wandb==0.18.7
+matplotlib
+tensorboardX

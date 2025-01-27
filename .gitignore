@@ -3,3 +3,7 @@ Diffusion-by-MaxEntIRL-main/datasets/*
 Diffusion-by-MaxEntIRL-main/pretrained
 Diffusion-by-MaxEntIRL-main/dropbox_download.zip
 Diffusion-by-MaxEntIRL-main/results
+Diffusion-by-MaxEntIRL-main-CTRL/datasets/*
+Diffusion-by-MaxEntIRL-main-CTRL/pretrained
+Diffusion-by-MaxEntIRL-main-CTRL/dropbox_download.zip
+Diffusion-by-MaxEntIRL-main-CTRL/results
