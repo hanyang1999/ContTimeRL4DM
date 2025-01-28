@@ -30,7 +30,8 @@ from src.ImageReward_VN_train import (
     init_value_function,
     train_value_batch,
     decompose_and_batch_samples_list,
-    inference_value_grad_batch
+    inference_value_batch,
+    inference_advantage_batch
 )
 
 tqdm = partial(tqdm.tqdm, dynamic_ncols=True)
@@ -425,14 +426,21 @@ def main(_):
 
         value_function.eval()
 
+        torch.cuda.empty_cache()
+
+        # assert config.sample.batch_size % config.sample.sub_batch_size == 0
+
         for sample in tqdm(
             samples,
             desc="Computing Value Function",
             disable=not accelerator.is_local_main_process,
             position=0,
         ):
-            sample["VN_grad"] = inference_value_grad_batch(value_function, sample, pipeline, accelerator)
-        
+            
+            # sample["VN_grad"] = inference_value_cont_batch(value_function, sample, pipeline, accelerator, config, sample_neg_prompt_embeds, config.sample.sub_batch_size)
+            sample["advantages"] = inference_advantage_batch(value_function, sample, pipeline, accelerator)
+            torch.cuda.empty_cache()
+                        
         # Start training of diffusion models
         
         # collate samples into dict where each entry has shape (num_batches_per_epoch * sample.batch_size, ...)
@@ -463,12 +471,9 @@ def main(_):
             step=global_step,
         )
 
-        samples["advantages"] = samples["rewards"].unsqueeze(1) - samples["VN_value"]
-
         samples["advantages"] = (samples["advantages"] - samples["advantages"].mean(dim=0, keepdim=True)) / (samples["advantages"].std(dim=0, keepdim=True) + 1e-8)
 
         del samples["rewards"]
-        del samples["VN_value"]
         del samples["denoised_latents"]
         # del samples["rewards_regularized"]
         del samples["prompt_ids"]

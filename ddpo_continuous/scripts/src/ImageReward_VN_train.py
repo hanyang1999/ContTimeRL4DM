@@ -10,6 +10,11 @@ from PIL import Image
 from scripts.src.ImageReward_VN import ImageRewardValue
 from accelerate.logging import get_logger
 from torch.optim.lr_scheduler import LambdaLR
+from ddpo_pytorch.diffusers_patch.ddim_with_logprob import ddim_step_with_value_grad
+import tqdm
+from functools import partial
+tqdm = partial(tqdm.tqdm, dynamic_ncols=True)
+
 
 logger = get_logger(__name__)
 
@@ -223,7 +228,7 @@ def inference_value_batch(value_function, sample_dict, pipeline, accelerator, su
         sub_batch_size: Number of samples to process in each sub-batch
     
     Returns:
-        Tensor of shape (batch_size, num_samples, output_dim)
+        Tensor of shape (batch_size, num_timesteps, output_dim)
     """
     if accelerator.is_main_process:
         validate_model_modes(value_function)
@@ -234,14 +239,14 @@ def inference_value_batch(value_function, sample_dict, pipeline, accelerator, su
     prompts = batch_data["prompt"]
     timesteps = batch_data["timesteps"].to(accelerator.device)
 
-    batch_size, num_samples = latents.shape[0], latents.shape[1]
-    total_samples = batch_size * num_samples
+    batch_size, num_timesteps = latents.shape[0], latents.shape[1]
+    total_samples = batch_size * num_timesteps
     
     # Reshape inputs
     latents = latents.reshape(-1, 4, 64, 64)
     denoised_latents = denoised_latents.reshape(-1, 4, 64, 64)
     timesteps = timesteps.reshape(-1)
-    prompts = [p for p in prompts for _ in range(num_samples)]
+    prompts = [p for p in prompts for _ in range(num_timesteps)]
 
     resize_transform = transforms.Compose([
         transforms.Resize((224, 224)),
@@ -284,12 +289,11 @@ def inference_value_batch(value_function, sample_dict, pipeline, accelerator, su
     values = torch.cat(all_values, dim=0)
     
     # Reshape to original batch dimensions
-    values = values.reshape(batch_size, num_samples)
+    values = values.reshape(batch_size, num_timesteps)
     
     return values
 
-
-def inference_value_grad_batch(value_function, sample_dict, pipeline, accelerator, sub_batch_size=50):
+def inference_advantage_batch(value_function, sample_dict, pipeline, accelerator, sub_batch_size=51):
     """Train value function on batches to avoid memory issues.
     
     Args:
@@ -300,25 +304,33 @@ def inference_value_grad_batch(value_function, sample_dict, pipeline, accelerato
         sub_batch_size: Number of samples to process in each sub-batch
     
     Returns:
-        Tensor of shape (batch_size, num_samples, output_dim)
+        Tensor of shape (batch_size, num_timesteps, output_dim)
     """
     if accelerator.is_main_process:
         validate_model_modes(value_function)
 
     batch_data = sample_dict
     latents = batch_data["latents"].to(accelerator.device)
+    next_latents = batch_data["next_latents"].to(accelerator.device)
     denoised_latents = batch_data["denoised_latents"].to(accelerator.device)
     prompts = batch_data["prompt"]
     timesteps = batch_data["timesteps"].to(accelerator.device)
+    
+    batch_size, num_timesteps = latents.shape[0], latents.shape[1]
 
-    batch_size, num_samples = latents.shape[0], latents.shape[1]
-    total_samples = batch_size * num_samples
+    # Assuming latents is [batch, 50, 4, 64, 64]
+    latents = torch.cat([latents, next_latents[:,-1:].clone()], dim=1)  # Now becomes [batch, 51, 4, 64, 64]
+    denoised_latents = torch.cat([denoised_latents, next_latents[:,-1:]], dim=1)
+
+    zeros = torch.zeros((timesteps.shape[0], 1), device=timesteps.device, dtype=timesteps.dtype)
+    timesteps = torch.cat([timesteps, zeros], dim=1)  # Will become [batch, 51]
+    total_samples = batch_size * (num_timesteps+1)
     
     # Reshape inputs
     latents = latents.reshape(-1, 4, 64, 64)
     denoised_latents = denoised_latents.reshape(-1, 4, 64, 64)
     timesteps = timesteps.reshape(-1)
-    prompts = [p for p in prompts for _ in range(num_samples)]
+    prompts = [p for p in prompts for _ in range(num_timesteps+1)]
 
     resize_transform = transforms.Compose([
         transforms.Resize((224, 224)),
@@ -361,7 +373,86 @@ def inference_value_grad_batch(value_function, sample_dict, pipeline, accelerato
     values = torch.cat(all_values, dim=0)
     
     # Reshape to original batch dimensions
-    values = values.reshape(batch_size, num_samples)
+    values = values.reshape(batch_size, num_timesteps+1)
     
-    return values
+    return values[:, 1:]-values[:, :-1]
+
+
+def inference_value_cont_batch(value_function, sample_dict, pipeline, accelerator, config, sample_neg_prompt_embeds=None, sub_batch_size=50):
+    """Compute value function gradients on batches, taking into account both direct and
+    indirect (through denoised images) gradient paths.
     
+    Args:
+        value_function: The value function model
+        sample_dict: Dictionary containing batch data
+        pipeline: Pipeline for processing
+        accelerator: Accelerator for device management
+        config: Configuration object containing CFG settings
+        sample_neg_prompt_embeds: Negative prompt embeddings for CFG
+        sub_batch_size: Number of samples to process in each sub-batch
+    
+    Returns:
+        torch.Tensor: Value function gradients with shape (batch_size, timesteps, 4, 64, 64)
+    """
+    if accelerator.is_main_process:
+        validate_model_modes(value_function)
+
+    # Get original batch size and number of timesteps
+    batch_size = sample_dict["latents"].shape[0]
+    num_timesteps = sample_dict["timesteps"].shape[1]
+    
+    # Handle classifier-free guidance embeddings
+    if config.train.cfg:
+        embeds = torch.cat([sample_neg_prompt_embeds, sample_dict["prompt_embeds"]])
+    else:
+        embeds = sample_dict["prompt_embeds"]
+
+    # Process each timestep
+    all_timestep_grads = []
+    for j in tqdm(
+        range(num_timesteps),
+        desc="Computing value gradients",
+        position=1,
+        leave=False,
+        disable=not accelerator.is_local_main_process,
+    ):
+        batch_grads = []
+        # Process in sub-batches
+        for i in range(0, batch_size, sub_batch_size):
+            end_idx = min(i + sub_batch_size, batch_size)
+            
+            with accelerator.autocast():
+                # Get sub-batch prompts
+                sub_prompts = sample_dict["prompt"][i:end_idx]
+
+                # Compute value gradients using ddim step
+                value_grads = ddim_step_with_value_grad(
+                            pipeline.scheduler,
+                            timestep=sample_dict["timesteps"][i:end_idx, j],
+                            sample=sample_dict["latents"][i:end_idx, j],
+                            pipeline=pipeline,
+                            embeds=embeds[i:end_idx] if isinstance(embeds, torch.Tensor) else embeds,
+                            value_function=value_function,
+                            prompts=sub_prompts,
+                            config=config,
+                            eta=config.sample.eta
+                        )
+                
+                batch_grads.append(value_grads)
+                
+                # Free memory
+                del value_grads
+                torch.cuda.empty_cache()
+
+        # Concatenate sub-batch results for this timestep
+        timestep_grads = torch.cat(batch_grads, dim=0)
+        all_timestep_grads.append(timestep_grads)
+        
+        # Free memory
+        del timestep_grads, batch_grads
+        torch.cuda.empty_cache()
+
+    # Stack gradients along timestep dimension
+    value_grads = torch.stack(all_timestep_grads, dim=1)
+    
+    return value_grads

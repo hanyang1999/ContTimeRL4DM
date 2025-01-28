@@ -470,7 +470,6 @@ def main(_):
         del samples["rewards"]
         del samples["VN_value"]
         del samples["denoised_latents"]
-        # del samples["rewards_regularized"]
         del samples["prompt_ids"]
 
         total_batch_size, num_timesteps = samples["timesteps"].shape

@@ -52,7 +52,7 @@ def compressibility():
 def imagereward():
     config = compressibility()
 
-    config.save_freq = 1
+    config.save_freq = 20
     
     #config.run_name = "ddpo_incompressibility"
 
@@ -60,6 +60,7 @@ def imagereward():
     config.reward_fn = "imagereward"
 
     config.sample.batch_size = 8
+    config.sample.sub_batch_size = 1
     config.sample.num_batches_per_epoch = 16
 
     config.train.clip_range = 1e-5

@@ -165,20 +165,19 @@ class ImageRewardValue(nn.Module):
         text_input = self.blip.tokenizer(prompts, padding='max_length', truncation=True, max_length=35, return_tensors="pt").to(cur_device)
         
         # Process original images with frozen BLIP and MLP
-        with torch.no_grad():
-            image_embeds = self.blip.visual_encoder(denoised_images).to(cur_device)
-            image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long).to(cur_device)
+        image_embeds = self.blip.visual_encoder(denoised_images).to(cur_device)
+        image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long).to(cur_device)
 
-            text_output = self.blip.text_encoder(
-                text_input.input_ids,
-                encoder_hidden_states=image_embeds,
-                encoder_attention_mask=image_atts,
-                return_dict=True,
-            )
-            
-            combined_embedding = text_output.last_hidden_state[:, 0, :].float()
-            value = self.mlp(combined_embedding)
-            value = (value - self.mean) / self.std
+        text_output = self.blip.text_encoder(
+            text_input.input_ids,
+            encoder_hidden_states=image_embeds,
+            encoder_attention_mask=image_atts,
+            return_dict=True,
+        )
+        
+        combined_embedding = text_output.last_hidden_state[:, 0, :].float()
+        value = self.mlp(combined_embedding)
+        value = (value - self.mean) / self.std
 
         # Process denoised images with learnable BLIP and MLP
         denoised_image_embeds = self.denoised_blip.visual_encoder(images).to(cur_device)
