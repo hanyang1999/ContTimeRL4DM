@@ -56,8 +56,8 @@ training:
   n_critic: 1
   n_generator: 1
   lr: 2e-7
-  v_lr: 1e-6
+  v_lr: 1e-5
   seed: 112233
   log_every: 50
-  beta_lr: 1e-6
+  beta_lr: 1e-5
 

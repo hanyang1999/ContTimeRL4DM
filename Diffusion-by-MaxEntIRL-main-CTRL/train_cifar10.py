@@ -289,16 +289,27 @@ if __name__ == "__main__":
 
     if tune_beta:
         params_not_beta = [param for name, param in net.named_parameters() if "log_betas" not in name]
-        optimizer = torch.optim.Adam([
+        optimizer = torch.optim.AdamW([
             {"params": net.log_betas, "lr": cfg.training.beta_lr},
             {"params": params_not_beta, "lr": cfg.training.lr}
         ])
         print0(f"[Optimizer] Training beta with lr={cfg.training.beta_lr}")
         print0(f"[Optimizer] Training the rest with lr={cfg.training.lr}")
     else:
-        optimizer = torch.optim.Adam(net.parameters(), lr=cfg.training.lr)
+        optimizer = torch.optim.AdamW(net.parameters(), lr=cfg.training.lr)
 
-    optimizer_v = torch.optim.Adam(v.parameters(), lr=cfg.training.v_lr)
+    optimizer_v = torch.optim.AdamW(v.parameters(), lr=cfg.training.v_lr)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, 
+        T_max=cfg.training.n_epochs,  # Total number of epochs
+        eta_min=cfg.training.lr/2    # Minimum learning rate
+    )
+
+    # scheduler_v = torch.optim.lr_scheduler.CosineAnnealingLR(
+    #     optimizer_v, 
+    #     T_max=cfg.training.n_epochs,  # Total number of epochs
+    #     eta_min=cfg.training.min_v_lr/2  # Minimum learning rate for v optimizer
+    # )
 
     ngpus = torch.cuda.device_count()
     if ngpus >= 1:
@@ -335,6 +346,7 @@ if __name__ == "__main__":
         v=v,
         sampler=sampler,
         optimizer=optimizer,
+        scheduler=scheduler,
         optimizer_fstar=None,
         optimizer_v=optimizer_v,
     )

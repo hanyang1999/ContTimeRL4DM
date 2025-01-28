@@ -133,11 +133,12 @@ class DxMI_Trainer:
         self.skip_sampler_tau = skip_sampler_tau
 
 
-    def set_models(self, f, v, sampler, optimizer, optimizer_fstar, optimizer_v):
+    def set_models(self, f, v, sampler, optimizer, scheduler, optimizer_fstar, optimizer_v):
         self.f = f
         self.v = v
         self.sampler = sampler
         self.optimizer = optimizer
+        self.scheduler = scheduler
         self.optimizer_fstar = optimizer_fstar
         self.optimizer_v = optimizer_v   
 
@@ -408,6 +409,7 @@ class DxMI_Trainer:
             sampler_loss.backward()
             torch.nn.utils.clip_grad_norm_(self.sampler.parameters(), 0.1)
             self.optimizer.step()
+            self.scheduler.step()
 
         d_train_sample = {
             "sampler/sampler_loss_": sampler_loss.item(),
@@ -515,12 +517,13 @@ class DxMI_Trainer_Cond:
         self.value_grad_clip = value_grad_clip
 
     def set_models(
-        self, v, sampler, optimizer, optimizer_v, f=None, optimizer_fstar=None
+        self, v, sampler, optimizer, scheduler, optimizer_v, f=None, optimizer_fstar=None
     ):
         self.f = f  # energy function. not used.
         self.v = v
         self.sampler = sampler
         self.optimizer = optimizer
+        self.scheduler = scheduler
         self.optimizer_fstar = optimizer_fstar  # not used
         self.optimizer_v = optimizer_v
 
