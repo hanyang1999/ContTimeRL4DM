@@ -418,7 +418,8 @@ def ddim_step_with_value_grad(
         current_images,
         denoised_images,
         prompts,
-        timestep.expand(sample.shape[0])
+        timestep.expand(sample.shape[0]),
+        config.design
     )
 
     # Compute gradients and explicitly prevent future gradient computation

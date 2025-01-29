@@ -3,7 +3,7 @@ import os
 import urllib
 import warnings
 from typing import Any, Union, List
-from ImageReward_VN import ImageRewardValue
+from filesystem.gpu_8.ContTimeRL4DM.ddpo_continuous.scripts.backup.ImageReward_VN import ImageRewardValue
 import torch
 from tqdm import tqdm
 from huggingface_hub import hf_hub_download

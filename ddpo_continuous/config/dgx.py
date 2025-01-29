@@ -55,14 +55,16 @@ def imagereward():
     config.num_epochs = 100
     config.reward_fn = "imagereward"
 
-    config.sample.batch_size = 16
-    config.sample.num_batches_per_epoch = 8
+    config.pretrained.model = "runwayml/stable-diffusion-v1-5"
+
+    config.sample.batch_size = 64
+    config.sample.num_batches_per_epoch = 1
 
     config.train.clip_range = 1e-5
     config.train.learning_rate = 3e-5
 
-    config.train.batch_size = 2
-    config.train.gradient_accumulation_steps = 32
+    config.train.batch_size = 4
+    config.train.gradient_accumulation_steps = 8
 
     # config.prompt_fn = "activities"
     # config.prompt_fn = "simple_animal"
@@ -72,7 +74,7 @@ def imagereward():
     #     "min_count": 16,
     # }
 
-    config.run_name = f"ddpo_imagereward_no_regularization_eta={config.sample.eta}_decay={config.sample.decay.type}_lr={config.train.learning_rate}_clip={config.train.clip_range}_seed={config.seed}"
+    config.run_name = f"ddpo_imagereward_no_regularization_lr={config.train.learning_rate}_clip={config.train.clip_range}_seed={config.seed}"
     return config
 
 def aesthetic():

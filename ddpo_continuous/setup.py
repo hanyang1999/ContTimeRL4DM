@@ -11,9 +11,10 @@ setup(
         "diffusers[torch]==0.17.1",
         "accelerate==0.17",
         "wandb",
-        "torchvision==0.13.1", #"torchvision"
+        "torchvision>=0.13.1", #"torchvision"
         "inflect==6.0.4",
         "pydantic==1.10.9",
         "transformers==4.30.2",
+        "huggingface_hub==0.23.0"
     ],
 )

@@ -88,7 +88,7 @@ def main(_):
 
     if accelerator.is_main_process:
         accelerator.init_trackers(
-            project_name="ddpo-pytorch", config=config.to_dict(), init_kwargs={"wandb": {"name": config.run_name, "entity": "fantastic_team"}}
+            project_name="RL training for DM", config=config.to_dict(), init_kwargs={"wandb": {"name": config.run_name, "entity": "fantastic_team"}}
         )
     
     logger.info(f"\n{config}")
@@ -432,13 +432,13 @@ def main(_):
 
         for sample in tqdm(
             samples,
-            desc="Computing Value Function",
+            desc="Computing Advantage Function",
             disable=not accelerator.is_local_main_process,
             position=0,
         ):
             
             # sample["VN_grad"] = inference_value_cont_batch(value_function, sample, pipeline, accelerator, config, sample_neg_prompt_embeds, config.sample.sub_batch_size)
-            sample["advantages"] = inference_advantage_batch(value_function, sample, pipeline, accelerator)
+            sample["advantages"] = inference_advantage_batch(value_function, sample, pipeline, accelerator, config)
             torch.cuda.empty_cache()
                         
         # Start training of diffusion models

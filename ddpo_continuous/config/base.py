@@ -44,7 +44,7 @@ def get_config():
     # base model to load. either a path to a local directory, or a model name from the HuggingFace model hub.
     pretrained.model = "runwayml/stable-diffusion-v1-5"
     # revision of the model to load.
-    pretrained.revision = "main"
+    pretrained.revision = None
 
     ###### Sampling ######
     config.sample = sample = ml_collections.ConfigDict()

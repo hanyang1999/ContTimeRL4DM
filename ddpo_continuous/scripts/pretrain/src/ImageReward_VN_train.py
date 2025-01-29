@@ -143,7 +143,7 @@ def train_value_batch(value_function, samples_batched, pipeline, accelerator, co
         denoised_images = denoised_images.clamp(0, 1)
         denoised_images = resize_transform(denoised_images)
     
-    pred_value = value_function(images, denoised_images, prompts, timesteps) + 0.0 * sum([torch.sum(param) for param in value_function.parameters()])
+    pred_value = value_function(images, denoised_images, prompts, timesteps, config.design) + 0.0 * sum([torch.sum(param) for param in value_function.parameters()])
     value_loss = F.mse_loss(pred_value.float(), batch_final_reward.float())
     accelerator.backward(value_loss)
     return value_loss

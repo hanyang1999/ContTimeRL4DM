@@ -59,15 +59,14 @@ def imagereward():
     config.num_epochs = 100
     config.reward_fn = "imagereward"
 
-    config.sample.batch_size = 8
-    config.sample.sub_batch_size = 1
-    config.sample.num_batches_per_epoch = 16
+    config.sample.batch_size = 64
+    config.sample.num_batches_per_epoch = 2
 
     config.train.clip_range = 1e-5
     config.train.learning_rate = 3e-5
 
-    config.train.batch_size = 2
-    config.train.gradient_accumulation_steps = 32
+    config.train.batch_size = 4
+    config.train.gradient_accumulation_steps = 16
 
     # config.prompt_fn = "activities"
     # config.prompt_fn = "simple_animal"
@@ -79,17 +78,17 @@ def imagereward():
 
     # Model settings
     config.pretrained = ml_collections.ConfigDict()
-    #config.pretrained.model = "runwayml/stable-diffusion-v1-5"
-    config.pretrained.model = "CompVis/stable-diffusion-v1-4"
-    config.pretrained.revision = "main"
+    config.pretrained.model = "runwayml/stable-diffusion-v1-5"
+    config.pretrained.revision = None
 
     config.value_network = ml_collections.ConfigDict()
     config.value_network.med_config = "config/med_config.json"
+    config.design = {"first":"denoised","second":"original","skip_func_in":"cos","skip_func_out":"sin"}
     
     # Training parameters
     config.pretrain_VN = ml_collections.ConfigDict()
-    config.pretrain_VN.batch_size = 50
-    config.pretrain_VN.learning_rate = 3e-7
+    config.pretrain_VN.batch_size = 100
+    config.pretrain_VN.learning_rate = 1e-7
     config.pretrain_VN.adam_beta1 = 0.9
     config.pretrain_VN.adam_beta2 = 0.999
     config.pretrain_VN.adam_weight_decay = 0.01
@@ -97,12 +96,12 @@ def imagereward():
     config.pretrain_VN.gradient_accumulation_steps = 32
     config.pretrain_VN.num_inner_epochs = 1
     config.pretrain_VN.max_grad_norm = 1.0
-    config.pretrain_VN.warmup_ratio = 0.05
-    config.pretrained_VN_path = "/home/hanyang/diffusion_alignment/ContTimeRL4DM/ddpo_continuous/scripts/pretrain/src/pretrain_ckpts/image_reward_training_fixrate=0.7_network=flipped_warmup=0.05_2025.01.24_12.09.52/value_network_epoch_40.pt"
+    config.pretrain_VN.warmup_ratio = 0.1
+    config.pretrained_VN_path ="/root/filesystem/gpu_8/ContTimeRL4DM/ddpo_continuous/scripts/pretrain/src/pretrain_ckpts/image_reward_training_fixrate=0.7_cos-sin_warmup=0.05_2025.01.29_13.07.45/value_network_epoch_60.pt"
 
     config.v_step = 1
     
-    config.run_name = f"ddpo_imagereward_with-VN_no_regularization_eta={config.sample.eta}_decay={config.sample.decay.type}_lr={config.train.learning_rate}_clip={config.train.clip_range}_seed={config.seed}"
+    config.run_name = f"ddpo_cont_no_regularization_lr={config.train.learning_rate}_clip={config.train.clip_range}_seed={config.seed}"
     return config
 
 def get_config(name):

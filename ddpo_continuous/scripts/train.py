@@ -78,7 +78,7 @@ def main(_):
     )
     if accelerator.is_main_process:
         accelerator.init_trackers(
-            project_name="ddpo-pytorch", config=config.to_dict(), init_kwargs={"wandb": {"name": config.run_name, "entity": "fantastic_team"}}
+            project_name="RL training for DM", config=config.to_dict(), init_kwargs={"wandb": {"name": config.run_name, "entity": "fantastic_team"}}
         )
     logger.info(f"\n{config}")
 

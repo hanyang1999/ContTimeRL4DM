@@ -3,7 +3,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 from PIL import Image
 from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, Normalize
-from scripts.src.models.BLIP.blip_pretrain import BLIP_Pretrain
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "src")))
+
+from .models.BLIP.blip_pretrain import BLIP_Pretrain
 
 try:
     from torchvision.transforms import InterpolationMode
@@ -84,8 +88,21 @@ class ImageRewardValue(nn.Module):
         self.mlp.eval()
         return self
 
-    def skip_func(self, timesteps):
-        return torch.cos((torch.pi / 2) * (timesteps-1)/1000)
+    def skip_func_in(self, timesteps, choice):
+        if choice == "cos":
+            return torch.cos((torch.pi / 2) * timesteps/1000)
+        elif choice == "linear":
+            return 1.0 - timesteps/1000
+        elif choice == "const":
+            return 1.0
+    
+    def skip_func_out(self, timesteps, choice):
+        if choice == "1-cos":
+            return 1.0-torch.cos((torch.pi / 2) * timesteps/1000)
+        elif choice == "sin":
+            return torch.sin((torch.pi / 2) * timesteps/1000)
+        elif choice == "linear":
+            return timesteps/1000
     
     def freeze_original_models(self):
         """Freeze the original BLIP and MLP models"""
@@ -117,47 +134,8 @@ class ImageRewardValue(nn.Module):
             if image_fix_num in name:
                 break
 
-    # def forward(self, images, denoised_images, prompts, timesteps=None):
-    #     self.mlp.eval()
+    def forward(self, images, denoised_images, prompts, timesteps=None, design={"first":"denoised","second":"original","skip_func_in":"cos","skip_func_out":"sin"}):
 
-    #     cur_device = next(self.blip.parameters()).device
-
-    #     text_input = self.blip.tokenizer(prompts, padding='max_length', truncation=True, max_length=35, return_tensors="pt").to(cur_device)
-        
-    #     # Process original images with frozen BLIP and MLP
-    #     with torch.no_grad():
-    #         image_embeds = self.blip.visual_encoder(images).to(cur_device)
-    #         image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long).to(cur_device)
-
-    #         text_output = self.blip.text_encoder(
-    #             text_input.input_ids,
-    #             encoder_hidden_states=image_embeds,
-    #             encoder_attention_mask=image_atts,
-    #             return_dict=True,
-    #         )
-            
-    #         combined_embedding = text_output.last_hidden_state[:, 0, :].float()
-    #         value = self.mlp(combined_embedding)
-    #         value = (value - self.mean) / self.std
-
-    #     # Process denoised images with learnable BLIP and MLP
-    #     denoised_image_embeds = self.denoised_blip.visual_encoder(denoised_images).to(cur_device)
-    #     denoised_image_atts = torch.ones(denoised_image_embeds.size()[:-1], dtype=torch.long).to(cur_device)
-        
-    #     denoised_text_output = self.denoised_blip.text_encoder(
-    #         text_input.input_ids,
-    #         encoder_hidden_states=denoised_image_embeds,
-    #         encoder_attention_mask=denoised_image_atts,
-    #         return_dict=True,
-    #     )
-        
-    #     denoised_combined_embedding = denoised_text_output.last_hidden_state[:, 0, :].float()
-    #     denoised_value = self.denoised_mlp(denoised_combined_embedding)
-    #     denoised_value = (denoised_value - self.mean) / self.std
-        
-    #     return self.skip_func(timesteps) * value.squeeze(-1) + (1-self.skip_func(timesteps)) * denoised_value.squeeze(-1)
-
-    def forward(self, images, denoised_images, prompts, timesteps=None):
         self.mlp.eval()
 
         cur_device = next(self.blip.parameters()).device
@@ -165,22 +143,31 @@ class ImageRewardValue(nn.Module):
         text_input = self.blip.tokenizer(prompts, padding='max_length', truncation=True, max_length=35, return_tensors="pt").to(cur_device)
         
         # Process original images with frozen BLIP and MLP
-        image_embeds = self.blip.visual_encoder(denoised_images).to(cur_device)
-        image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long).to(cur_device)
+        with torch.no_grad():
+            # image_embeds = self.blip.visual_encoder(denoised_images).to(cur_device)
+            if design["first"]=="denoised":
+                image_embeds = self.blip.visual_encoder(denoised_images).to(cur_device)
+            else:
+                image_embeds = self.blip.visual_encoder(images).to(cur_device)
+            image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long).to(cur_device)
 
-        text_output = self.blip.text_encoder(
-            text_input.input_ids,
-            encoder_hidden_states=image_embeds,
-            encoder_attention_mask=image_atts,
-            return_dict=True,
-        )
-        
-        combined_embedding = text_output.last_hidden_state[:, 0, :].float()
-        value = self.mlp(combined_embedding)
-        value = (value - self.mean) / self.std
+            text_output = self.blip.text_encoder(
+                text_input.input_ids,
+                encoder_hidden_states=image_embeds,
+                encoder_attention_mask=image_atts,
+                return_dict=True,
+            )
+            
+            combined_embedding = text_output.last_hidden_state[:, 0, :].float()
+            value = self.mlp(combined_embedding)
+            value = (value - self.mean) / self.std
 
         # Process denoised images with learnable BLIP and MLP
-        denoised_image_embeds = self.denoised_blip.visual_encoder(images).to(cur_device)
+        # denoised_image_embeds = self.denoised_blip.visual_encoder(images).to(cur_device)
+        if design["second"]=="denoised":
+            denoised_image_embeds = self.denoised_blip.visual_encoder(denoised_images).to(cur_device)
+        else:
+            denoised_image_embeds = self.denoised_blip.visual_encoder(images).to(cur_device)
         denoised_image_atts = torch.ones(denoised_image_embeds.size()[:-1], dtype=torch.long).to(cur_device)
         
         denoised_text_output = self.denoised_blip.text_encoder(
@@ -194,4 +181,4 @@ class ImageRewardValue(nn.Module):
         denoised_value = self.denoised_mlp(denoised_combined_embedding)
         denoised_value = (denoised_value - self.mean) / self.std
         
-        return self.skip_func(timesteps) * value.squeeze(-1) + (1-self.skip_func(timesteps)) * denoised_value.squeeze(-1)
+        return self.skip_func_in(timesteps, "cos") * value.squeeze(-1) + self.skip_func_out(timesteps, "sin") * denoised_value.squeeze(-1)

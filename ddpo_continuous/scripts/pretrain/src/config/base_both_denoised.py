@@ -5,16 +5,16 @@ def get_config():
 
     config.seed = 42
 
-    config.design = {"first":"denoised","second":"","skip_func_in":"cos","skip_func_out":"1-cos"}
+    config.design = {"first":"denoised","second":"denoised","skip_func_in":"cos","skip_func_out":"1-cos"}
 
     # Basic training settings
-    config.num_epochs = 100
+    config.num_epochs = 70
     config.save_freq = 20
     config.num_checkpoint_limit = 5
     config.mixed_precision = "fp16"
     config.logdir = "pretrain_ckpts"
     # config.run_name = "image_reward_training_fixrate=0.7_network=flipped_warmup=0.05"
-    config.run_name = "image_reward_training_fixrate=0.7_warmup=0.05"
+    config.run_name = "image_reward_training_fixrate=0.7_double-denoised_warmup=0.05"
     config.use_lora = False
     
     # Model settings

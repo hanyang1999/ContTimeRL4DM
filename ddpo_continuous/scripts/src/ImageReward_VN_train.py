@@ -62,34 +62,32 @@ def load(name: str = "ImageReward-v1.0", device: Union[str, torch.device] = "cud
 
     return model
 
-def load_VN(name: str = "ImageReward-v1.0", device: Union[str, torch.device] = "cuda" if torch.cuda.is_available() else "cpu", download_root: str = None, med_config: str = None):
-    """Load a ImageReward model with dual BLIP architecture"""
-    if name in _MODELS:
-        model_path = ImageReward_download(_MODELS[name], download_root or os.path.expanduser("~/.cache/ImageReward"))
-    elif os.path.isfile(name):
-        model_path = name
-    else:
-        raise RuntimeError(f"Model {name} not found; available models = {available_models()}")
+# def load_VN(name, device: Union[str, torch.device] = "cuda" if torch.cuda.is_available() else "cpu", download_root: str = None, med_config: str = None):
+#     """Load a ImageReward model with dual BLIP architecture"""
+#     if os.path.isfile(name):
+#         model_path = name
+#     else:
+#         raise RuntimeError(f"Model {name} not found; available models = {available_models()}")
 
-    print('Loading checkpoint from %s' % model_path)
-    state_dict = torch.load(model_path, map_location='cpu')
+#     print('Loading checkpoint from %s' % model_path)
+#     state_dict = torch.load(model_path, map_location='cpu')
     
-    if med_config is None:
-        med_config = ImageReward_download("https://huggingface.co/THUDM/ImageReward/blob/main/med_config.json", 
-                                        download_root or os.path.expanduser("~/.cache/ImageReward"))
+#     # if med_config is None:
+#     #     med_config = ImageReward_download("https://huggingface.co/THUDM/ImageReward/blob/main/med_config.json", 
+#     #                                     download_root or os.path.expanduser("~/.cache/ImageReward"))
     
-    model = ImageRewardValue(med_config=med_config).to(device)
-    msg = model.load_state_dict(state_dict, strict=False)
+#     model = ImageRewardValue(med_config=med_config).to(device)
+#     msg = model.load_state_dict(state_dict, strict=False)
+#     print("Missing or unexpected keys:", msg)
 
-    model.denoised_blip.load_state_dict(model.blip.state_dict())
-    model.denoised_mlp.load_state_dict(model.mlp.state_dict())
-    model.mlp.eval()
-    
-    model.freeze_original_models()
-    print("Checkpoint loaded and original models frozen")
-    model.freeze_denoised_layers(fix_rate=0.7)
+#     import pdb;pdb.set_trace()
+#     #print("Checkpoint keys:", state_dict.keys())
 
-    return model
+#     model.mlp.eval()
+#     model.freeze_original_models()
+#     print("Checkpoint loaded and original models frozen")
+#     model.freeze_denoised_layers(fix_rate=0.7)
+#     return model
 
 def validate_model_modes(model):
     """Verify that original MLP is in eval mode while denoised_mlp respects training mode"""
@@ -185,11 +183,11 @@ def train_value_batch(value_function, samples_batched, pipeline, accelerator, co
 
 def init_value_function(config, accelerator):
     """Initialize value function, optimizer and scheduler"""
-    if config.pretrained_VN_path:
-        value_function = load_VN(config.pretrained_VN_path, med_config=config.value_network.med_config, device=accelerator.device)
-        print("loaded pretrained value function")
-    else:
-        value_function = load("ImageReward-v1.0", med_config=config.value_network.med_config, device=accelerator.device)
+    # if config.pretrained_VN_path:
+    #     value_function = load_VN(config.pretrained_VN_path, med_config=config.value_network.med_config, device=accelerator.device)
+    #     print("loaded pretrained value function")
+    # else:
+    value_function = load("ImageReward-v1.0", med_config=config.value_network.med_config, device=accelerator.device)
     
     if hasattr(value_function, "gradient_checkpointing_enable"):
         value_function.gradient_checkpointing_enable()
@@ -212,12 +210,17 @@ def init_value_function(config, accelerator):
     scheduler = LambdaLR(optimizer, lr_lambda=constant_lr_lambda)
     value_function, optimizer = accelerator.prepare(value_function, optimizer)
 
+    if config.pretrained_VN_path:
+        print(f"Loading checkpoints from {config.pretrained_VN_path}.")
+        state_dict = torch.load(config.pretrained_VN_path, map_location=accelerator.device)
+        value_function.load_state_dict(state_dict)
+
     if isinstance(value_function, torch.nn.parallel.DistributedDataParallel):
         value_function.find_unused_parameters = True
         
     return value_function, optimizer, scheduler
 
-def inference_value_batch(value_function, sample_dict, pipeline, accelerator, sub_batch_size=50):
+def inference_value_batch(value_function, sample_dict, pipeline, accelerator, config, sub_batch_size=50):
     """Train value function on batches to avoid memory issues.
     
     Args:
@@ -293,7 +296,7 @@ def inference_value_batch(value_function, sample_dict, pipeline, accelerator, su
     
     return values
 
-def inference_advantage_batch(value_function, sample_dict, pipeline, accelerator, sub_batch_size=51):
+def inference_advantage_batch(value_function, sample_dict, pipeline, accelerator, config, sub_batch_size=102):
     """Train value function on batches to avoid memory issues.
     
     Args:

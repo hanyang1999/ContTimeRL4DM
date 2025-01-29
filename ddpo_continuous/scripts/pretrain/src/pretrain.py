@@ -50,9 +50,9 @@ def main(_):
 
     if accelerator.is_main_process:
         accelerator.init_trackers(
-            project_name="image-reward-value",
+            project_name="Value-function Pretraining",
             config=config.to_dict(),
-            init_kwargs={"wandb": {"name": config.run_name}}
+            init_kwargs={"wandb": {"name": config.run_name, "entity": "fantastic_team"}}
         )
     
     logger.info(f"\n{config}")
