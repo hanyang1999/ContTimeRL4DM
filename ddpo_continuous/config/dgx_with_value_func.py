@@ -62,8 +62,8 @@ def imagereward():
     config.sample.batch_size = 64
     config.sample.num_batches_per_epoch = 2
 
-    config.train.clip_range = 1e-5
-    config.train.learning_rate = 3e-5
+    config.train.clip_range = 1.5e-5
+    config.train.learning_rate = 5e-5
 
     config.train.batch_size = 4
     config.train.gradient_accumulation_steps = 16
