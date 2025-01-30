@@ -17,6 +17,8 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torchvision.utils import make_grid, save_image
+from torch.optim.lr_scheduler import LambdaLR
+
 from tqdm import tqdm
 
 import random
@@ -42,6 +44,11 @@ import datetime
 
 def rescale(X, batch=True):
     return (X - (-1)) / (2)
+
+
+# Define a decay function
+def decay_fn(epoch):
+    return 0.9995 ** epoch  # Exponential decay factor
 
 
 def print_size(net):
@@ -168,6 +175,7 @@ def train_one_epoch(
         if cfg.training.fid_every is not None and i_iter % cfg.training.fid_every == 0:
             best_fid, m2, s2 = calculate_fid(trainer, sampler, logdir, i_iter, device, local_rank, ngpus, cfg, logger, best_fid, m2, s2)
 
+        
         sampler.eval()
         images = (2 * images - 1).to(device)
         if guidance_scale is not None:
@@ -181,6 +189,7 @@ def train_one_epoch(
             d_sample = sampler.sample(len(images), device=device)
             append_buffer(state_dict, d_sample)
             d_energy = trainer.update_f_v(images, d_sample, state_dict)
+
         if (step + 1) % n_critic == 0:
             if cfg.training.get("fresh_sample", False):  # for SGD training
                 fresh_sample_grad = cfg.training.get("fresh_sample_grad", False)
@@ -202,8 +211,13 @@ def train_one_epoch(
                     "weight_norm/sampler_": s_norm,
                     "weight_norm/value_": v_norm,
                 }
+                # lr_log = {
+                #     "lr/v_lr_": d_energy['ebm/lr'],
+                #     "lr/sampler_lr_": d_sample["sampler/sampler_lr"],
+                # }
                 logger.log({**d_energy, **d_sampler, **d_weight}, i_iter)
 
+        #breakpoint()
         i_iter += 1
 
 
@@ -299,16 +313,29 @@ if __name__ == "__main__":
         optimizer = torch.optim.AdamW(net.parameters(), lr=cfg.training.lr)
 
     optimizer_v = torch.optim.AdamW(v.parameters(), lr=cfg.training.v_lr)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, 
-        T_max=cfg.training.n_epochs,  # Total number of epochs
-        eta_min=cfg.training.lr/2    # Minimum learning rate
-    )
+#    scheduler = None 
+    
+    scheduler = LambdaLR(optimizer, lr_lambda=[
+        lambda epoch: 1.0,  # No decay for log_betas (param group 0)
+        decay_fn  # Apply decay to params_not_beta (param group 1)
+    ])
+
+    # scheduler_v = torch.optim.lr_scheduler.ExponentialLR(
+    #     optimizer_v, 
+    #     gamma=0.9999
+    # )
 
     # scheduler_v = torch.optim.lr_scheduler.CosineAnnealingLR(
     #     optimizer_v, 
-    #     T_max=cfg.training.n_epochs,  # Total number of epochs
-    #     eta_min=cfg.training.min_v_lr/2  # Minimum learning rate for v optimizer
+    #     T_max=550 * cfg.training.n_epochs,  # Total number of epochs
+    #     eta_min=cfg.training.v_lr/2  # Minimum learning rate for v optimizer
+    # )
+
+    scheduler_v = None
+    # scheduler_v = torch.optim.lr_scheduler.CosineAnnealingLR(
+    #     optimizer_v, 
+    #     T_max=550 * cfg.training.n_epochs,  # Total number of epochs
+    #     eta_min=cfg.training.v_lr/2  # Minimum learning rate for v optimizer
     # )
 
     ngpus = torch.cuda.device_count()
@@ -349,6 +376,7 @@ if __name__ == "__main__":
         scheduler=scheduler,
         optimizer_fstar=None,
         optimizer_v=optimizer_v,
+        scheduler_v=scheduler_v
     )
 
     # train

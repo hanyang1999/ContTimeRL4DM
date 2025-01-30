@@ -33,8 +33,8 @@ value:
 
 trainer:
   _target_: models.DxMI.trainer.DxMI_Trainer
-  tau1: 0.1
-  tau2: 0.01
+  tau1: 0
+  tau2: 0
   gamma: 1
   use_sampler_beta: True
   time_cost: 0

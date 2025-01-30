@@ -133,14 +133,15 @@ class DxMI_Trainer:
         self.skip_sampler_tau = skip_sampler_tau
 
 
-    def set_models(self, f, v, sampler, optimizer, scheduler, optimizer_fstar, optimizer_v):
+    def set_models(self, f, v, sampler, optimizer, scheduler, optimizer_fstar, optimizer_v, scheduler_v):
         self.f = f
         self.v = v
         self.sampler = sampler
         self.optimizer = optimizer
         self.scheduler = scheduler
         self.optimizer_fstar = optimizer_fstar
-        self.optimizer_v = optimizer_v   
+        self.optimizer_v = optimizer_v  
+        self.scheduler_v = scheduler_v 
 
         if self.use_sampler_beta:
             if hasattr(self.sampler, 'user_defined_eta'):
@@ -265,6 +266,8 @@ class DxMI_Trainer:
 
         if self.f is None:
             self.optimizer_v.step()
+            if self.scheduler_v != None:
+                self.scheduler_v.step()
             self.optimizer_v.zero_grad()
         else:
             self.optimizer_fstar.step()
@@ -327,19 +330,42 @@ class DxMI_Trainer:
             if self.value_grad_clip:
                 torch.nn.utils.clip_grad_norm_(self.v.parameters(), 0.1)
             self.optimizer_v.step()
+            if self.scheduler_v != None:
+                self.scheduler_v.step()
             self.optimizer_v.zero_grad()
 
             d_running_cost[f'running_cost/step_{update_t}_'] = running_cost.mean().item()
             d_value[f"value/step_{update_t}_"] = v_xt.mean().item()
 
-        d_energy = {
-            'ebm/d_loss_': d_loss.item(),
-            'ebm/v_loss_': v_loss.item(),
-            'ebm/pos_e_': pos_e.mean().item(),
-            'ebm/neg_e_': neg_e.mean().item(),
-            'ebm/running_cost_': running_cost.mean().item(),
-            'ebm/reg_': reg.item(),
-        }
+        
+        total_norm = 0.0
+        for p in self.v.parameters():
+            if p.grad is not None:
+                param_norm = p.grad.norm(2)  # Compute L2 norm of gradients
+                total_norm += param_norm.item() ** 2
+        total_norm = total_norm ** 0.5  # Final L2 norm
+
+        if self.scheduler_v != None:
+            d_energy = {
+                'ebm/d_loss_': d_loss.item(),
+                'ebm/v_loss_': v_loss.item(),
+                'ebm/pos_e_': pos_e.mean().item(),
+                'ebm/neg_e_': neg_e.mean().item(),
+                'ebm/running_cost_': running_cost.mean().item(),
+                'ebm/reg_': reg.item(),
+                'ebm/lr_': self.scheduler_v.get_last_lr()[0],
+                'ebm/v_grad_norm_': total_norm,
+            }
+        else:
+            d_energy = {
+                'ebm/d_loss_': d_loss.item(),
+                'ebm/v_loss_': v_loss.item(),
+                'ebm/pos_e_': pos_e.mean().item(),
+                'ebm/neg_e_': neg_e.mean().item(),
+                'ebm/running_cost_': running_cost.mean().item(),
+                'ebm/reg_': reg.item(),
+                'ebm/v_grad_norm_': total_norm,
+            }
         d_energy.update(d_running_cost)
         d_energy.update(d_value)
 
@@ -382,7 +408,7 @@ class DxMI_Trainer:
                                                      state,
                                                      retain_graph=True)[0]
                     #grad_next_state = torch.autograd.grad(sampler_value_loss_sum, state, retain_graph=True, allow_unused=True)[0]                                      
-                    sampler_value_loss = grad_state * (next_state - state)
+                    sampler_value_loss = grad_state * torch.clamp(next_state - state,  min=-0.1, max=0.1)
                     sampler_value_loss = sampler_value_loss.sum(dim=(1, 2, 3))
                     # sampler_value_loss = (sampler_value_loss - sampler_value_loss.mean()) / sampler_value_loss.std()
                     
@@ -407,15 +433,27 @@ class DxMI_Trainer:
             ).mean()
 
             sampler_loss.backward()
+
+            total_norm = 0.0
+            for p in self.sampler.parameters():
+                if p.grad is not None:
+                    param_norm = p.grad.norm(2)  # Compute L2 norm of gradients
+                    total_norm += param_norm.item() ** 2
+            total_norm = total_norm ** 0.5  # Final L2 norm
+
             torch.nn.utils.clip_grad_norm_(self.sampler.parameters(), 0.1)
             self.optimizer.step()
-            self.scheduler.step()
+            if self.scheduler != None:
+                self.scheduler.step()
 
         d_train_sample = {
             "sampler/sampler_loss_": sampler_loss.item(),
             "sampler/sampler_value_loss_": sampler_value_loss.mean().item(),
             "sampler/running_cost_": running_cost.mean().item(),
             "sampler/causal_entropy_": causal_entropy.mean().item(),
+            "sampler/beta_lr_": self.optimizer.param_groups[0]['lr'],
+            "sampler/sampler_lr_": self.optimizer.param_groups[1]['lr'],
+            "sampler/grad_norm_": total_norm,
         }
 
         if self.sampler.trainable_beta:
@@ -704,6 +742,8 @@ class DxMI_Trainer_Cond:
             "ebm/neg_e_": neg_e.mean().item(),
             "ebm/running_cost_": running_cost.mean().item(),
             "ebm/reg_": reg.item(),
+            'ebm/lr': self.scheduler_v.get_last_lr()[0],
+
         }
         d_energy.update(d_running_cost)
         d_energy.update(d_value)
@@ -1028,6 +1068,8 @@ class DxMI_Trainer_EV:
             "ebm/pos_e_": pos_e.mean().item(),
             "ebm/neg_e_": neg_e.mean().item(),
             "ebm/running_cost_": running_cost.mean().item(),
+            'ebm/lr': self.scheduler_v.get_last_lr()[0],
+
         }
         d_energy.update(d_running_cost)
 
